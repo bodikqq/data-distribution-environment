@@ -26,17 +26,27 @@ class GraphEnv(gym.Env):
         self.time_step_in_ms = time_step
         self.descriptions_for_regular_tasks = descriptions_for_regular_tasks
         
+        print("Loading graph from JSON file...", flush=True)
         # Load the graph from the JSON file
         with open(json_path, 'r') as f:
             self.graph = json.load(f)
+        print(f"Graph loaded successfully: {len(self.graph.get('vertices', []))} vertices, {len(self.graph.get('connections', []))} connections", flush=True)
             
+        print("Initializing graph connections...", flush=True)
         # Initialize graph components
         for connection in self.graph.get("connections", []):
             connection["tasks"] = []
             connection["reserved_from_previous_step"] = 0
+        print("Connections initialized", flush=True)
             
+        print("Initializing vertices...", flush=True)
+        vertex_count = 0
         # Initialize vertices
         for vertex in self.graph.get("vertices", []):
+            vertex_count += 1
+            if vertex_count % 100 == 0:  # Print status every 100 vertices
+                print(f"Processed {vertex_count} vertices so far...", flush=True)
+                
             vertex["tasks"] = []
             if vertex.get("label") == "controller":
                 vertex["sensors_info"] = {}
@@ -52,6 +62,7 @@ class GraphEnv(gym.Env):
                 except ValueError as e:
                     print(f"Warning: Could not find closest controller for sensor {vertex['id']}: {e}")
                     vertex["closest_controller"] = None
+        print("All vertices initialized", flush=True)
     
         # Initialize environment variables
         self.time = 0
@@ -63,6 +74,7 @@ class GraphEnv(gym.Env):
         self.observation = {
             "graph": self.graph,
         }
+        print("Environment variables initialized", flush=True)
         
         # Simplified action space for testing: List of [sensor_id, target] pairs
         # Each element is a tuple of two integers
@@ -208,7 +220,6 @@ class GraphEnv(gym.Env):
             "steps_taken": step_count
         }
         rewardq = self.reward
-        self.reset()
         return self.observation, rewardq, done, info
 
     def process_tasks(self):
@@ -266,12 +277,11 @@ class GraphEnv(gym.Env):
                             if len(connection.get("tasks", [])) < max_tasks:
                                 tasks_to_remove.append(task)
                                 connection["tasks"].append(task)
-                                print(f"🚀 Moving task {task['task_id']} from {current_vertex} to {next_hop}")
+                                print(f" Moving task {task['task_id']} from {current_vertex} to {next_hop}")
                             break
                             
                 except Exception as e:
-                    print(f"Error processing task {task.get('task_id')}: {e}")
-                    continue
+                    raise Exception(f"Error processing task {task.get('task_id')}: {e}")
                     
             # Remove processed tasks from vertex
             for task in tasks_to_remove:
@@ -430,8 +440,7 @@ class GraphEnv(gym.Env):
                     try:
                         target = self.handle_closest_controller(str(vertex["id"]))
                     except ValueError as e:
-                        print(f"Error finding controller for vertex {vertex['id']}: {e}")
-                        continue
+                        raise Exception(f"Error finding controller for vertex {vertex['id']}: {e}")
                 
                 # Debug print for vertex 4's sensors
                 if str(target) == "4":
@@ -573,8 +582,6 @@ class GraphEnv(gym.Env):
             raise NameError(f"❌ Task {task} failed - Invalid target")
             
         # If this is the final destination (target sensor)
-        if not target_vertex == target_vertex:
-            raise NameError(f"❌ Task {task} failed - we are not at the target")
         if str(task["target"]) == target:
             # For confirmation tasks, check the condition and create answer task
             if task.get("task_name") == "confirmation_task":
@@ -633,10 +640,19 @@ class GraphEnv(gym.Env):
             elif task.get("task_name") == "control_light":
                 if "parameters_to_change" in task:
                     params = task["parameters_to_change"]
-                    if "brightness" in params:
-                        target_vertex["brightness"] = params["brightness"]
-                    if "isOn" in params:
-                        target_vertex["isOn"] = params["isOn"]
+                    # Make sure we're finding the correct target light vertex again
+                    light_vertex = self.find_edge_vertex(str(task["target"]))
+                    if not light_vertex:
+                        print(f"❌ Light control task {task['task_id']} failed - Cannot find target light {task['target']}")
+                        return False
+                        
+                    # Update the light's parameters
+                    for param, value in params.items():
+                        light_vertex[param] = value
+                        
+                    # Debug print to verify changes
+                    print(f"🔍 Debug: Light {task['target']} parameters after update: isOn={light_vertex.get('isOn', 'N/A')}, brightness={light_vertex.get('brightness', 'N/A')}")
+                    
                 reward = self.update_reward(task)
                 print(f"💡 Light control task {task['task_id']} completed - Set brightness to {params.get('brightness', 'N/A')} on light {target} - Reward: {reward:.3f}")
                 return True
@@ -847,17 +863,26 @@ class GraphEnv(gym.Env):
     
 
 if __name__ == "__main__": 
-    env = GraphEnv(usfl_arr.descriptions_for_regular_tasks)
-    obs, info = env.reset()
+    # Set up logging to file
     
-    print("\n=== Test: Light Control Without Confirmations ===")
+    print("Starting GraphEnv initialization...", flush=True)
+    env = GraphEnv(usfl_arr.descriptions_for_regular_tasks)
+    print("GraphEnv initialized successfully!", flush=True)
+    
+    print("Resetting environment...", flush=True)
+    obs, info = env.reset()
+    print("Environment reset complete!", flush=True)
+    
+    print("\n=== Test: Light Control Without Confirmations ===", flush=True)
     # Create light control tasks from controller 4 to multiple lights
+    print("Creating light control tasks...", flush=True)
     light_tasks, success = env.lights_scenario("4", importance=5)
     
     if success:
-        print(f"Successfully created {len(light_tasks)} light control tasks")
+        print(f"Successfully created {len(light_tasks)} light control tasks", flush=True)
         
         # Run until all tasks are complete
+        print("Running environment step...", flush=True)
         obs, reward, done, info = env.step([])
         
         # Print final results
@@ -867,7 +892,7 @@ if __name__ == "__main__":
         print(f"Total reward accumulated: {reward}")
         
         # Check final state of lights
-        for light_id in usfl_arr.light:
+        for light_id in usfl_arr.light[:5]:  # Check first 3 lights only
             light = env.find_edge_vertex(light_id)
             if light:
                 print(f"\nLight {light_id} final state:")
