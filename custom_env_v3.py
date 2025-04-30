@@ -20,7 +20,7 @@ class GraphEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
     
 
-    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10):
+    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10,scenario = "light"):
         super(GraphEnv, self).__init__()
         self.json_path = json_path
         self.time_step_in_ms = time_step
@@ -65,6 +65,7 @@ class GraphEnv(gym.Env):
         print("All vertices initialized", flush=True)
     
         # Initialize environment variables
+        self.scenario = scenario
         self.time = 0
         self.task_id = 1
         self.reward = 0
@@ -145,6 +146,7 @@ class GraphEnv(gym.Env):
         return self.observation, {}
 
     def step(self, matrix):
+        self.reset()
         """Process an Nx2 matrix where each row contains a sensor ID and target, and advance the environment until all non-info tasks are complete.
         
         Args:
@@ -160,6 +162,9 @@ class GraphEnv(gym.Env):
             info: Additional information for debugging
         """
         # Validate input matrix
+        if(matrix == "start"):
+            return self.observation
+        
         if(len(matrix) == 0):
             matrix = []
         elif len(matrix[0]) != 2:
@@ -176,28 +181,13 @@ class GraphEnv(gym.Env):
 
         max_steps = 1000  # Safety limit to prevent infinite loops
         step_count = 0
-        
+        for _ in range(10):
+            self.time_step()
+        if self.scenario == "light":
+            self.lights_scenario("4", importance=5)
         while step_count < max_steps:
             # Check if there are any non-info tasks remaining
-            non_info_tasks_remain = False
-            
-            # Check vertices for non-info tasks
-            for vertex in self.graph["vertices"]:
-                for task in vertex.get("tasks", []):
-                    if task.get("task_name") != "info_task":
-                        non_info_tasks_remain = True
-                        break
-                if non_info_tasks_remain:
-                    break
-                    
-            # Check connections for non-info tasks
-            for connection in self.graph["connections"]:
-                for task in connection.get("tasks", []):
-                    if task.get("task_name") != "info_task":
-                        non_info_tasks_remain = True
-                        break
-                if non_info_tasks_remain:
-                    break
+            non_info_tasks_remain = self.check_non_info_tasks()
                     
             # Check confirmation tasks
             if self.confirmation_tasks or self.tasks_awaiting_confirmation:
@@ -208,8 +198,7 @@ class GraphEnv(gym.Env):
                 break
                 
             # Process time steps
-            for i in range(10):
-                self.time_step()
+            self.time_step()
             step_count += 1
         
         # Return the standard gym environment outputs
@@ -221,7 +210,17 @@ class GraphEnv(gym.Env):
         }
         rewardq = self.reward
         return self.observation, rewardq, done, info
+    def check_non_info_tasks(self): 
+        for vertex in self.graph["vertices"]:
+                for task in vertex.get("tasks", []):
+                    if task.get("task_name") != "info_task":
+                        return  True 
+        for connection in self.graph["connections"]:
+                for task in connection.get("tasks", []):
+                    if task.get("task_name") != "info_task":
+                        return True
 
+        return False
     def process_tasks(self):
         """Process tasks in vertices and move them to appropriate connections if possible."""
         for vertex in self.graph["vertices"]:
@@ -542,6 +541,8 @@ class GraphEnv(gym.Env):
         return False
 
     def calculate_task_reward(self, task):
+        if task.get("task_name") == "info_task":
+            return 0
         """Calculate reward for completing a task based on speed and type.
         
         Args:
@@ -649,10 +650,6 @@ class GraphEnv(gym.Env):
                     # Update the light's parameters
                     for param, value in params.items():
                         light_vertex[param] = value
-                        
-                    # Debug print to verify changes
-                    print(f"🔍 Debug: Light {task['target']} parameters after update: isOn={light_vertex.get('isOn', 'N/A')}, brightness={light_vertex.get('brightness', 'N/A')}")
-                    
                 reward = self.update_reward(task)
                 print(f"💡 Light control task {task['task_id']} completed - Set brightness to {params.get('brightness', 'N/A')} on light {target} - Reward: {reward:.3f}")
                 return True
