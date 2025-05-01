@@ -27,12 +27,13 @@ def test_env_manually(env):
     print("\nTesting light control scenario with multiple random steps...")
 
     
-    total_steps = 3  # Reduced total steps but with more actions per step
+    total_steps = 2  # Reduced total steps but with more actions per step
     actions_per_step = 0  # Use 100 actions per step
     print(f"\nRunning {total_steps} steps with {actions_per_step} random actions each for lights scenario:")
     rewards = []
     
     for i in range(total_steps): 
+        env.lights_scenario("4")
         # Generate multiple random actions for this step
         actions = []
         for _ in range(actions_per_step):
@@ -74,7 +75,6 @@ if __name__ == "__main__":
         # Try manual testing first
         if test_env_manually(env):
             print("\nManual testing successful!")
-            print("\nEnvironment is ready for training!")
         
     except Exception as e:
         print("\nError in testing:", str(e))

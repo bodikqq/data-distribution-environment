@@ -1,4 +1,6 @@
 import random
+import copy
+
 CO2 = [
     112, 133, 154, 174, 195, 216, 237, 258, 279, 300, 322, 343, 364, 385, 406, 427,
     465, 467, 469, 471, 473, 475, 477, 479, 481, 483, 485, 487, 489, 491, 493, 495,
@@ -220,6 +222,9 @@ descriptions_for_regular_tasks = [
     }
 ]
 
+# Store the initial state
+_initial_descriptions_for_regular_tasks = copy.deepcopy(descriptions_for_regular_tasks)
+
 def add_new_regular_task(target, specific_id,label):
     label = str(label)
     """
@@ -248,4 +253,9 @@ def add_new_regular_task(target, specific_id,label):
         "target": target
     }
     descriptions_for_regular_tasks.append(new_task)
+
+def reset_regular_tasks():
+    """Resets the descriptions_for_regular_tasks list to its initial state."""
+    global descriptions_for_regular_tasks
+    descriptions_for_regular_tasks = copy.deepcopy(_initial_descriptions_for_regular_tasks)
 

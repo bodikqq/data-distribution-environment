@@ -130,7 +130,7 @@ class GraphEnv(gym.Env):
         self.time = 0
         self.task_id = 1
         self.reward = 0
-        
+        usfl_arr.reset_regular_tasks()
         # Reset task-related dictionaries
         self.tasks_awaiting_confirmation = {}
         self.confirmation_tasks = {}
@@ -146,7 +146,6 @@ class GraphEnv(gym.Env):
         return self.observation, {}
 
     def step(self, matrix):
-        self.reset()
         """Process an Nx2 matrix where each row contains a sensor ID and target, and advance the environment until all non-info tasks are complete.
         
         Args:
@@ -161,10 +160,7 @@ class GraphEnv(gym.Env):
             done: Whether the episode is finished
             info: Additional information for debugging
         """
-        # Validate input matrix
-        if(matrix == "start"):
-            return self.observation
-        
+
         if(len(matrix) == 0):
             matrix = []
         elif len(matrix[0]) != 2:
@@ -181,10 +177,10 @@ class GraphEnv(gym.Env):
 
         max_steps = 1000  # Safety limit to prevent infinite loops
         step_count = 0
-        for _ in range(10):
-            self.time_step()
-        if self.scenario == "light":
-            self.lights_scenario("4", importance=5)
+        #for _ in range(10):
+        #    self.time_step()
+        #if self.scenario == "light":
+            #self.lights_scenario("4", importance=5)
         while step_count < max_steps:
             # Check if there are any non-info tasks remaining
             non_info_tasks_remain = self.check_non_info_tasks()
@@ -210,17 +206,36 @@ class GraphEnv(gym.Env):
         }
         rewardq = self.reward
         return self.observation, rewardq, done, info
-    def check_non_info_tasks(self): 
-        for vertex in self.graph["vertices"]:
-                for task in vertex.get("tasks", []):
-                    if task.get("task_name") != "info_task":
-                        return  True 
-        for connection in self.graph["connections"]:
-                for task in connection.get("tasks", []):
-                    if task.get("task_name") != "info_task":
-                        return True
 
-        return False
+    def check_non_info_tasks(self):
+        found_non_info = False # Flag to track if we found any
+
+        # Check vertices
+        for vertex in self.graph["vertices"]:
+            for task in vertex.get("tasks", []):
+                task_name = task.get("task_name", "UNKNOWN_NAME")
+                if task_name != "info_task":
+                    
+                    found_non_info = True
+                    # Don't return immediately, let's see if there are others
+
+        # Check connections
+        for connection in self.graph["connections"]:
+            for task in connection.get("tasks", []):
+                task_name = task.get("task_name", "UNKNOWN_NAME")
+                if task_name != "info_task":
+                   
+                    found_non_info = True
+                    # Don't return immediately
+
+        # Check confirmation dictionaries
+        if self.tasks_awaiting_confirmation:
+
+            found_non_info = True
+        if self.confirmation_tasks:
+
+            found_non_info = True
+        return found_non_info # Return the collected status
     def process_tasks(self):
         """Process tasks in vertices and move them to appropriate connections if possible."""
         for vertex in self.graph["vertices"]:
@@ -239,32 +254,9 @@ class GraphEnv(gym.Env):
                             tasks_to_remove.append(task)
                         continue
                         
-                    # Find path to target through controllers if needed
-                    if task.get("task_name") in ["confirmation_task", "confirmation_answer"]:
-                        # For confirmation tasks, find path through controllers
-                        controllers = [v for v in self.graph["vertices"] if v["label"] == "controller"]
-                        paths = []
-                        for controller in controllers:
-                            try:
-                                path1 = usfl_func.find_path(self.graph, current_vertex, str(controller["id"]))
-                                path2 = usfl_func.find_path(self.graph, str(controller["id"]), target_vertex)
-                                if path1 and path2:
-                                    cost = (sum(usfl_func.get_connection_cost(self.graph, path1[i], path1[i+1]) 
-                                             for i in range(len(path1)-1)) +
-                                          sum(usfl_func.get_connection_cost(self.graph, path2[i], path2[i+1])
-                                             for i in range(len(path2)-1)))
-                                    paths.append((path1[1], cost))  # Just take next hop from first path
-                            except Exception:
-                                raise("wtf is this and  why this works, or does it?")
-                                continue
-                        
-                        if paths:
-                            # Take the path with lowest cost
-                            next_hop, _ = min(paths, key=lambda x: x[1])
-                        else:
-                            next_hop = usfl_func.get_next_hop(self.graph, current_vertex, target_vertex)
-                    else:
-                        next_hop = usfl_func.get_next_hop(self.graph, current_vertex, target_vertex)
+                    # Find path to target - simplified: always use get_next_hop
+                    # Removed the complex path-through-controller logic for confirmation tasks
+                    next_hop = usfl_func.get_next_hop(self.graph, current_vertex, target_vertex)
                     
                     # Find the connection to the next hop
                     for connection in self.graph["connections"]:
@@ -272,21 +264,30 @@ class GraphEnv(gym.Env):
                             (str(connection["source"]) == str(next_hop) and str(connection["target"]) == current_vertex)):
                             
                             # Check if connection has space for more tasks
-                            max_tasks = (self.time_step_in_ms + 30) / 4
+                            # Simplified max_tasks calculation (example)
+                            max_tasks = 10 # Example: Allow up to 10 tasks per connection step
+                            # max_tasks = (self.time_step_in_ms + 30) / 4 # Original calculation
                             if len(connection.get("tasks", [])) < max_tasks:
                                 tasks_to_remove.append(task)
                                 connection["tasks"].append(task)
-                                print(f" Moving task {task['task_id']} from {current_vertex} to {next_hop}")
+                                if(task["task_name"] != "info_task"):
+                                    print(f" Moving task {task['task_id']} from {current_vertex} to {next_hop}")
                             break
                             
                 except Exception as e:
-                    raise Exception(f"Error processing task {task.get('task_id')}: {e}")
+                    # Print a more informative error message
+                    print(f"Error processing task {task.get('task_id', 'N/A')} at vertex {current_vertex}: {e}")
+                    # Optionally, decide if the task should be removed or retried
+                    # tasks_to_remove.append(task) # Example: remove failing task
+                    continue # Continue to the next task
                     
             # Remove processed tasks from vertex
             for task in tasks_to_remove:
-                vertex["tasks"].remove(task)
-                if "usedSRAM" in vertex:
-                    vertex["usedSRAM"] = max(0, vertex["usedSRAM"] - task.get("sram_usage", 0))
+                # Check if task is still in the list before removing
+                if task in vertex["tasks"]:
+                    vertex["tasks"].remove(task)
+                    if "usedSRAM" in vertex:
+                        vertex["usedSRAM"] = max(0, vertex["usedSRAM"] - task.get("sram_usage", 0))
 
     def create_info_task(self, location, target_controller, importance=7, task_size=100, sram_usage=4000):
 # Get sensor type
@@ -348,20 +349,22 @@ class GraphEnv(gym.Env):
         self.task_id += 1
         return task
 
-    def create_confirmation_task(self, requester_task, sensor_id, condition, importance=8):
+    def create_confirmation_task(self, requester_task, target_controller_id, actual_sensor_id_to_check, condition, importance=8):
         """Create a task that checks sensor info and confirms if a condition is met.
         
         Args:
             requester_task: The task that needs confirmation
-            sensor_id: ID of the sensor to check
-            condition: Dict with {"type": "less_than"/"greater_than", "value": number}
+            target_controller_id: ID of the controller where the check should happen
+            actual_sensor_id_to_check: ID of the sensor whose data needs checking
+            condition: Dict with {"type": "less_than"/"greater_than", "value": number, "comparing parameter": "param_name"}
             importance: Priority level
         """
         task = {
             "task_id": self.task_id,
             "task_name": "confirmation_task",
             "task_location": requester_task["task_location"],
-            "target": sensor_id,
+            "target": target_controller_id, # Target is the controller
+            "sensor_id": str(actual_sensor_id_to_check),  # The actual sensor ID to check
             "importance": importance,
             "start_time": self.time,
             "task_size": 50,  # Small size for confirmation tasks
@@ -374,8 +377,8 @@ class GraphEnv(gym.Env):
 
     def create_confirmation_answer_task(self, confirmation_task, is_confirmed):
         """Create a task that sends confirmation results back."""        
-        task_location = confirmation_task["target"]  # Start from sensor
-        target = confirmation_task["task_location"]  # Send back to original controller
+        task_location = confirmation_task["target"]  # Start from controller where check happened
+        target = confirmation_task["task_location"]  # Send back to original controller/location
         
         answer_task = {
             "task_id": self.task_id,
@@ -386,7 +389,8 @@ class GraphEnv(gym.Env):
             "start_time": self.time,
             "task_size": 50,
             "sram_usage": 1000,
-            "requester_task_id": confirmation_task["requester_task_id"],
+            "requester_task_id": confirmation_task["requester_task_id"], # ID of original task (e.g., control_light)
+            "answered_request_id": confirmation_task["task_id"], # ID of the confirmation_task itself
             "confirmation_result": is_confirmed
         }
         self.task_id += 1
@@ -441,9 +445,7 @@ class GraphEnv(gym.Env):
                     except ValueError as e:
                         raise Exception(f"Error finding controller for vertex {vertex['id']}: {e}")
                 
-                # Debug print for vertex 4's sensors
-                if str(target) == "4":
-                    print(f"🔄 Creating task for sensor {vertex['id']} ({vertex['label']}) to send info to controller 4")
+                # Remove debug print for vertex 4's info tasks
                 
                 # Create and add task
                 task = self.create_info_task(vertex["id"], target, description["importance"], description["task_size"], description["sram_usage"])
@@ -553,7 +555,6 @@ class GraphEnv(gym.Env):
         """
         # Base reward for different task types
         base_rewards = {
-            "info_task": 0,
             "control_light": 0.2,
             "confirmation_task": 0.08,
             "confirmation_answer": 0.08
@@ -563,11 +564,12 @@ class GraphEnv(gym.Env):
         
         # Speed bonus calculation
         time_taken = self.time - task["start_time"]
+        print(task["start_time"], self.time, time_taken)
         # Maximum expected time is 1000ms, minimum is 10ms
-        normalized_time = max(0, min(1, 1 - (time_taken - 10) / 990))
-        speed_bonus = normalized_time * 0.1  # Up to 0.1 bonus for speed
-        
-        return base_reward + speed_bonus
+        normalized_time = max(0, min(1, 1 - ((time_taken - 10) / 990)))
+        speed_bonus = normalized_time * 0.15  # Up to 0. bonus for speed
+        bonus_for_importance = task.get("importance", 4) / 100  # Scale importance to a 0-1 range
+        return base_reward + speed_bonus + bonus_for_importance
 
     def update_reward(self, task):
         """Update the environment reward when a task is completed."""
@@ -586,36 +588,91 @@ class GraphEnv(gym.Env):
         if str(task["target"]) == target:
             # For confirmation tasks, check the condition and create answer task
             if task.get("task_name") == "confirmation_task":
-                if "value" not in target_vertex:
+                # Check if this is a controller with sensor info (our case)
+                if target_vertex.get("label") == "controller" and "sensors_info" in target_vertex:
+                    sensor_id = str(task.get("sensor_id", ""))
+                    
+                    # If no specific sensor_id is provided, use the one from the condition
+                    if not sensor_id and "condition" in task:
+                        sensor_id = str(task["condition"].get("sensor_id", ""))
+                    
+                    # Debug output
+                    print(f"Processing confirmation task {task['task_id']} for sensor {sensor_id} on controller {target}")
+                    
+                    if sensor_id not in target_vertex["sensors_info"]:
+                        print(f"❌ Confirmation task {task['task_id']} failed - No sensor info for sensor {sensor_id} in controller {target}")
+                        return False
+                    
+                    condition = task["condition"]
+                    comparing_parameter = condition.get("comparing parameter", "")
+                    
+                    if not comparing_parameter:
+                        print(f"❌ Confirmation task {task['task_id']} failed - No comparing parameter specified")
+                        return False
+                    
+                    # Get sensor info
+                    sensor_info = target_vertex["sensors_info"][sensor_id]["info"]
+                    
+                    if comparing_parameter not in sensor_info:
+                        print(f"❌ Confirmation task {task['task_id']} failed - Parameter {comparing_parameter} not found in sensor {sensor_id} info")
+                        return False
+                    
+                    value = sensor_info[comparing_parameter]
+                    
+                    # Check condition
+                    condition_met = False
+                    if condition["type"] == "less_than":
+                        condition_met = value < condition["value"]
+                    elif condition["type"] == "greater_than":
+                        condition_met = value > condition["value"]
+                    
+                    reward = self.update_reward(task)
+                    print(f"🔍 Confirmation task {task['task_id']} checked {comparing_parameter}={value} against condition {condition} - Result: {condition_met} - Reward: {reward:.3f}")
+                    
+                    # Create answer task
+                    answer_task = self.create_confirmation_answer_task(task, condition_met)
+                    
+                    # Find the controller that sent the confirmation task
+                    controller = self.find_edge_vertex(task["task_location"])
+                    if controller and "tasks" not in controller:
+                        controller["tasks"] = []
+                    if controller:
+                        controller["tasks"].append(answer_task)
+                        print(f"📤 Created confirmation answer task {answer_task['task_id']} and sent to controller {task['task_location']}")
+                    return True
+                    
+                # Original code for non-controller confirmation targets
+                elif "value" not in target_vertex:
                     print(f"❌ Confirmation task {task['task_id']} failed - No value in target sensor {target}")
                     return False
-
-                condition = task["condition"]
-                value = target_vertex["value"]
-                
-                condition_met = False
-                if condition["type"] == "less_than":
-                    condition_met = value < condition["value"]
-                elif condition["type"] == "greater_than":
-                    condition_met = value > condition["value"]
-                
-                reward = self.update_reward(task)
-                print(f"🔍 Confirmation task {task['task_id']} checked value {value} against condition {condition} - Result: {condition_met} - Reward: {reward:.3f}")
-                
-                # Create answer task
-                answer_task = self.create_confirmation_answer_task(task, condition_met)
-                
-                # Find the controller that sent the confirmation task
-                controller = self.find_edge_vertex(task["task_location"])
-                if controller and "tasks" not in controller:
-                    controller["tasks"] = []
-                if controller:
-                    controller["tasks"].append(answer_task)
-                    print(f"📤 Created confirmation answer task {answer_task['task_id']} and sent to controller {task['task_location']}")
-                return True
+                else:
+                    condition = task["condition"]
+                    value = target_vertex["value"]
+                    
+                    condition_met = False
+                    if condition["type"] == "less_than":
+                        condition_met = value < condition["value"]
+                    elif condition["type"] == "greater_than":
+                        condition_met = value > condition["value"]
+                    
+                    reward = self.update_reward(task)
+                    print(f"🔍 Confirmation task {task['task_id']} checked value {value} against condition {condition} - Result: {condition_met} - Reward: {reward:.3f}")
+                    
+                    # Create answer task
+                    answer_task = self.create_confirmation_answer_task(task, condition_met)
+                    
+                    # Find the controller that sent the confirmation task
+                    controller = self.find_edge_vertex(task["task_location"])
+                    if controller and "tasks" not in controller:
+                        controller["tasks"] = []
+                    if controller:
+                        controller["tasks"].append(answer_task)
+                        print(f"📤 Created confirmation answer task {answer_task['task_id']} and sent to controller {task['task_location']}")
+                    return True
 
             # For info tasks, store info by sensor ID    
             elif task.get("task_name") == "info_task":
+                # ... existing code ...
                 if "sensors_info" not in target_vertex:
                     target_vertex["sensors_info"] = {}
                 source_id = str(task.get("starting_sensor"))
@@ -624,11 +681,11 @@ class GraphEnv(gym.Env):
                     "timestamp": self.time,
                 }
                 reward = self.update_reward(task)
-                print(f"🎯 Info task {task['task_id']} from sensor {source_id} delivered to controller {target} - Reward: {reward:.3f}")
                 return True
 
             # For confirmation answer tasks, process them
             elif task.get("task_name") == "confirmation_answer":
+                # ... existing code ...
                 reward = self.update_reward(task)
                 print(f"📥 Processing confirmation answer task {task['task_id']} - Reward: {reward:.3f}")
                 self.handle_confirmation_answer(task)
@@ -639,17 +696,28 @@ class GraphEnv(gym.Env):
 
             # For light control tasks
             elif task.get("task_name") == "control_light":
+                # ... existing code ...
                 if "parameters_to_change" in task:
                     params = task["parameters_to_change"]
                     # Make sure we're finding the correct target light vertex again
                     light_vertex = self.find_edge_vertex(str(task["target"]))
+                    print(f"🔍 DEBUG: Light control task {task['task_id']} - Found light vertex: {light_vertex['id'] if light_vertex else 'NOT FOUND'}")
+                    
                     if not light_vertex:
                         print(f"❌ Light control task {task['task_id']} failed - Cannot find target light {task['target']}")
                         return False
                         
+                    # Print current values before update
+                    print(f"🔍 DEBUG: Before update - Light {task['target']} state: isOn={light_vertex.get('isOn', 'N/A')}, brightness={light_vertex.get('brightness', 'N/A')}")
+                    
                     # Update the light's parameters
                     for param, value in params.items():
                         light_vertex[param] = value
+                        print(f"🔍 DEBUG: Setting {param}={value} on light {task['target']}")
+                        
+                    # Verify the update worked
+                    print(f"🔍 DEBUG: After update - Light {task['target']} state: isOn={light_vertex.get('isOn', 'N/A')}, brightness={light_vertex.get('brightness', 'N/A')}")
+                    
                 reward = self.update_reward(task)
                 print(f"💡 Light control task {task['task_id']} completed - Set brightness to {params.get('brightness', 'N/A')} on light {target} - Reward: {reward:.3f}")
                 return True
@@ -671,12 +739,17 @@ class GraphEnv(gym.Env):
             target_vertex["usedSRAM"] += task.get("sram_usage", 0)
             
         target_vertex["tasks"].append(task)
-        print(f"📦 Task {task['task_id']} delivered to intermediate node {target}")
+        if(task["task_name"] != "info_task"):
+            print(f"📦 Task {task['task_id']} delivered to intermediate node {target}")
         task["task_location"] = target  # Update task location
         return True
 
     def handle_task_with_confirmation(self, task_with_confirmation):
-        """Handle a task that needs confirmation from other sensors."""
+        """Handle a task that needs confirmation from other sensors.
+        
+        The confirmation is done by checking controller information rather than 
+        directly accessing sensors.
+        """
         task = task_with_confirmation["task"]
         confirmations = task_with_confirmation["confirmations"]
         
@@ -688,31 +761,153 @@ class GraphEnv(gym.Env):
             "all_confirmed": True
         }
         
-        # Create and send confirmation tasks
+        # Get the current controller
+        current_controller = self.find_edge_vertex(task["task_location"])
+        if not current_controller or current_controller.get("label") != "controller":
+            raise ValueError(f"Task location {task['task_location']} is not a controller")
+        
+        # Process each confirmation request
         for confirmation in confirmations:
             sensor_id = confirmation["sensor_id"]
-            sensor = self.find_edge_vertex(sensor_id)
+            sensor_id_str = str(sensor_id)
             
-            # Create confirmation task
+            # First check if the current controller has the needed info
+            if "sensors_info" in current_controller and sensor_id_str in current_controller["sensors_info"]:
+                # Process confirmation locally
+                self._process_local_confirmation(task, current_controller, sensor_id_str, confirmation)
+                continue
+                
+            # If not, find the closest controller that might have the info
+            closest_controller = self._find_controller_with_sensor_info(current_controller["id"], sensor_id_str)
+            
+            if not closest_controller:
+                raise ValueError(f"No controller has information for sensor {sensor_id}")
+                
+            # Create confirmation task to send to the closest controller
+            # Corrected the arguments passed to create_confirmation_task
             conf_task = self.create_confirmation_task(
-                task,
-                sensor_id,
-                confirmation["condition"],
-                confirmation.get("importance", 8)
+                requester_task=task,
+                target_controller_id=closest_controller["id"],  # Send to the controller that has the info
+                actual_sensor_id_to_check=sensor_id,  # Pass the actual sensor ID
+                condition=confirmation["condition"], # Pass the condition dictionary
+                importance=confirmation.get("importance", 8)
             )
             
             # Store confirmation task
             self.confirmation_tasks[conf_task["task_id"]] = conf_task
             
-            # Find controller to handle the confirmation
-            controller = self.find_edge_vertex(task["task_location"])
-            if not controller:
-                raise ValueError(f"Controller {task['task_location']} not found in graph vertices")
-            if controller:
-                if "tasks" not in controller:
-                    controller["tasks"] = []
-                controller["tasks"].append(conf_task)
-                print(f"📋 Created confirmation task {conf_task['task_id']} for sensor {sensor_id}")
+            # Add the task to the current controller's tasks
+            if "tasks" not in current_controller:
+                current_controller["tasks"] = []
+            current_controller["tasks"].append(conf_task)
+            print(f"📋 Created confirmation task {conf_task['task_id']} to check sensor {sensor_id} info at controller {closest_controller['id']}")
+    
+    def _process_local_confirmation(self, task, controller, sensor_id, confirmation):
+        """Process a confirmation locally when the controller already has the sensor info."""
+        # Get the sensor info from the controller
+        sensor_info = controller["sensors_info"][sensor_id]["info"]
+        
+        # Get the value based on comparing parameter from the condition
+        comparing_parameter = confirmation["condition"].get("comparing parameter", "")
+        value = None
+        
+        if comparing_parameter in sensor_info:
+            value = sensor_info[comparing_parameter]
+        else:
+            raise ValueError(f"Sensor {sensor_id} does not have the parameter {comparing_parameter}")
+            
+        if value is None:
+            raise ValueError(f"Could not find a valid value in sensor {sensor_id} info")
+        
+        # Check if condition is met
+        condition_met = False
+        condition = confirmation["condition"]
+        if condition["type"] == "less_than":
+            condition_met = value < condition["value"]
+        elif condition["type"] == "greater_than":
+            condition_met = value > condition["value"]
+        
+        # Update the task awaiting confirmation
+        if task["task_id"] in self.tasks_awaiting_confirmation:
+            awaiting_task = self.tasks_awaiting_confirmation[task["task_id"]]
+            awaiting_task["confirmations_received"] += 1
+            
+            if not condition_met:
+                awaiting_task["all_confirmed"] = False
+                
+            print(f"🔍 Local confirmation for task {task['task_id']} checked {comparing_parameter} value {value} against condition {condition} - Result: {condition_met}")
+            
+            # If all confirmations are received, process the task
+            if awaiting_task["confirmations_received"] >= awaiting_task["confirmations_needed"]:
+                self._finalize_task_with_confirmation(awaiting_task)
+                
+    def _find_controller_with_sensor_info(self, current_controller_id, sensor_id):
+        """Find the closest controller that has information about the specified sensor."""
+        controllers = [v for v in self.graph["vertices"] if v["label"] == "controller"]
+        
+        # Debug output
+        print(f"Looking for controller with info for sensor {sensor_id}")
+        print(f"Current controller ID: {current_controller_id}")
+        
+        # Check each controller for the sensor info
+        controllers_with_info = []
+        for controller in controllers:
+            controller_id = str(controller["id"])
+            
+            # Debug output for each controller's sensor info
+            sensor_keys = list(controller.get("sensors_info", {}).keys())
+            print(f"Controller {controller_id} has sensors: {sensor_keys}")
+            
+            # Skip current controller as we already checked it in the calling method
+            if controller_id == str(current_controller_id):
+                print(f"Skipping current controller {controller_id}")
+                continue
+                
+            if "sensors_info" in controller and str(sensor_id) in controller["sensors_info"]:
+                print(f"Found sensor {sensor_id} info in controller {controller_id}")
+                # Calculate distance from current controller to this one
+                try:
+                    # Using find_fastest_path instead of find_path
+                    path = usfl_func.find_fastest_path(self.graph, str(current_controller_id), controller_id)
+                    if path:
+                        distance = len(path) - 1
+                        controllers_with_info.append((controller, distance))
+                        print(f"Path found to controller {controller_id} with distance {distance}")
+                    else:
+                        print(f"No path found to controller {controller_id}")
+                except Exception as e:
+                    print(f"Error finding path to controller {controller_id}: {e}")
+                    continue
+        
+        # Return the closest controller with the info
+        if controllers_with_info:
+            closest_controller, distance = min(controllers_with_info, key=lambda x: x[1])
+            print(f"Selected closest controller: {closest_controller['id']} with distance {distance}")
+            return closest_controller
+        
+        print(f"WARNING: No controller found with information for sensor {sensor_id}")
+        return None
+        
+    def _finalize_task_with_confirmation(self, awaiting_task):
+        """Finalize a task that was waiting for confirmations."""
+        if awaiting_task["all_confirmed"]:
+            # All confirmations successful, proceed with original task
+            original_task = awaiting_task["task"]
+            
+            # Get the controller that should execute the task - this is where the task should be located,
+            # not on the target vertex directly
+            controller_vertex = self.find_edge_vertex(str(original_task["task_location"]))
+            
+            if controller_vertex:
+                controller_vertex["tasks"].append(original_task)
+                print(f"✅ All confirmations passed for task {original_task['task_id']}, proceeding with task on controller {controller_vertex['id']}")
+            else:
+                print(f"❌ Cannot find controller vertex {original_task['task_location']} for task {original_task['task_id']}")
+        else:
+            print(f"❌ Confirmations failed for task {awaiting_task['task']['task_id']}, canceling task")
+            
+        # Clean up the awaiting confirmation task
+        del self.tasks_awaiting_confirmation[awaiting_task["task"]["task_id"]]
 
     def handle_confirmation_answer(self, answer_task):
         """Process a confirmation answer task.
@@ -721,9 +916,6 @@ class GraphEnv(gym.Env):
             answer_task: Dict containing the confirmation answer
         """
         requester_task_id = answer_task["requester_task_id"]
-        # Clean up the original confirmation task
-        if answer_task["task_id"] in self.confirmation_tasks:
-            del self.confirmation_tasks[answer_task["task_id"]]
             
         if requester_task_id in self.tasks_awaiting_confirmation:
             awaiting_task = self.tasks_awaiting_confirmation[requester_task_id]
@@ -735,27 +927,45 @@ class GraphEnv(gym.Env):
             
             # If we've received all confirmations
             if awaiting_task["confirmations_received"] >= awaiting_task["confirmations_needed"]:
+                original_task = awaiting_task["task"] # Get the original task
+
                 if awaiting_task["all_confirmed"]:
-                    # All confirmations successful, proceed with original task
-                    original_task = awaiting_task["task"]
-                    target_vertex = self.find_edge_vertex(str(original_task["target"]))
-                    if target_vertex and "tasks" not in target_vertex:
-                        target_vertex["tasks"] = []
-                    if target_vertex:
-                        target_vertex["tasks"].append(original_task)
+                    print(f"🔄 DEBUG: Confirmed task {original_task['task_id']} - target: {original_task['target']}, params: {original_task.get('parameters_to_change', 'N/A')}")
+
+                    # Find the controller where the answer arrived (which is the target of the answer task)
+                    controller_vertex = self.find_edge_vertex(str(answer_task["target"]))
+
+                    if controller_vertex:
+                        if "tasks" not in controller_vertex:
+                            controller_vertex["tasks"] = []
+                        # Add the original task to the CONTROLLER's queue to start its journey
+                        # Ensure the task's location is updated to the controller
+                        original_task["task_location"] = controller_vertex["id"]
+                        controller_vertex["tasks"].append(original_task)
+                        print(f"✅ DEBUG: Added confirmed task {original_task['task_id']} to controller {controller_vertex['id']} tasks queue for delivery to {original_task['target']}")
+                    else:
+                        # This shouldn't happen if the graph is consistent
+                        print(f"❌ DEBUG: Could not find controller vertex {answer_task['target']} to queue confirmed task {original_task['task_id']}")
+
+                else:
+                    print(f"❌ DEBUG: Task {requester_task_id} failed confirmation checks. Canceling.")
+                    # Optionally, add logic here if failed tasks need specific handling
                 
-                # Clean up all related confirmation tasks
-                confirmation_tasks_to_remove = []
-                for conf_task_id, conf_task in self.confirmation_tasks.items():
-                    if conf_task["requester_task_id"] == requester_task_id:
-                        confirmation_tasks_to_remove.append(conf_task_id)
-                
-                for conf_task_id in confirmation_tasks_to_remove:
-                    if conf_task_id in self.confirmation_tasks:
-                        del self.confirmation_tasks[conf_task_id]
-                
-                # Clean up the awaiting confirmation task
+                # Clean up the awaiting task regardless of success/failure, now that all confirmations are in
                 del self.tasks_awaiting_confirmation[requester_task_id]
+
+                # Clean up the original confirmation request task from the tracking dictionary
+                # Use the answered_request_id (which is the ID of the confirmation_task itself)
+                confirmation_task_id_to_remove = answer_task.get("answered_request_id")
+                if confirmation_task_id_to_remove and confirmation_task_id_to_remove in self.confirmation_tasks:
+                     del self.confirmation_tasks[confirmation_task_id_to_remove]
+                     print(f"🗑️ Removed confirmation task {confirmation_task_id_to_remove} from tracking dictionary.") # Added log
+                elif confirmation_task_id_to_remove:
+                    print(f"⚠️ Tried to remove confirmation task {confirmation_task_id_to_remove}, but it wasn't found in the dictionary.") # Added warning
+                else:
+                    print(f"⚠️ Confirmation answer task {answer_task['task_id']} is missing 'answered_request_id'. Cannot clean up confirmation_tasks.") # Added warning
+
+        # The removal of the answer task itself happens in process_confirmations
 
     def process_confirmations(self):
         """Process all confirmation-related tasks in the environment."""
@@ -773,25 +983,31 @@ class GraphEnv(gym.Env):
                 if task["task_id"] in self.confirmation_tasks:
                     del self.confirmation_tasks[task["task_id"]]
 
-
     def time_step(self):
+
         """Process one time step in the environment."""
+        print(f"\n\n=== Time step {self.time} ===", flush=True)
         # Process rest of time step
-        # Add debug prints for tasks creation
         created_tasks = self.tasks_autocreation()
+        
+        # Only print information about non-info tasks
         if created_tasks:
-            print(f"\n🔍 Created {len(created_tasks)} tasks:")
-            for task in created_tasks:
-                print(f"Task {task['task_id']}: {task['task_name']} from {task['starting_sensor']} to controller {task['target']}")
+            non_info_tasks = [task for task in created_tasks if task.get("task_name") != "info_task"]
+            if non_info_tasks:
+                print(f"\n🔍 Created {len(non_info_tasks)} non-info tasks:")
+                for task in non_info_tasks:
+                    print(f"Task {task['task_id']}: {task['task_name']} to {task['target']}")
 
         self.process_confirmations()
         self.process_tasks()
         
         for connection in self.graph.get("connections", []):
             # Calculate available bandwidth for this connection
-            available_bandwidth = ((connection["speed"] * 1000) / 1000) * self.time_step_in_ms
+            # Simplified calculation
+            available_bandwidth = connection["speed"] * self.time_step_in_ms
             available_bandwidth += connection["reserved_from_previous_step"]
             
+            # Reset reserved for the start of this step's processing
             connection["reserved_from_previous_step"] = 0
             
             if not connection["tasks"]:
@@ -802,14 +1018,34 @@ class GraphEnv(gym.Env):
             
             tasks_to_remove = []
             for task in connection["tasks"]:
+                # DEBUG print added previously
+                
+
                 if available_bandwidth >= task["task_size"]:
-                    target = int(connection["target"]) + int(connection["source"]) - int(task["task_location"])
-                    if self.do_task(task, target):
+                    # Determine the target vertex for do_task
+                    source_node = str(connection["source"])
+                    target_node = str(connection["target"])
+                    task_origin = str(task["task_location"]) # Where the task was before entering the connection
+
+                    destination_node = None
+                    if task_origin == source_node:
+                        destination_node = target_node
+                    elif task_origin == target_node:
+                        destination_node = source_node
+                    else:
+                        # Handle error or unexpected state
+                        print(f"Error: Task {task['task_id']} on connection {source_node}-{target_node} has unexpected origin {task_origin}. Skipping task.")
+                        continue # Skip task if destination is unclear
+
+                    if self.do_task(task, destination_node): # Pass the calculated destination
                         tasks_to_remove.append(task)
                         available_bandwidth -= task["task_size"]
+                        
+                    
+
                 else:
-                    connection["reserved_from_previous_step"] = available_bandwidth
-                    break
+                    connection["reserved_from_previous_step"] = available_bandwidth # Save remaining BW for next step
+                    break # Stop processing tasks for this connection
             
             # Remove processed tasks
             for task in tasks_to_remove:
@@ -860,40 +1096,122 @@ class GraphEnv(gym.Env):
     
 
 if __name__ == "__main__": 
-    # Set up logging to file
-    
-    print("Starting GraphEnv initialization...", flush=True)
+    print("\n=== Testing Cross-Controller Confirmation with sensor 41 ===\n")
     env = GraphEnv(usfl_arr.descriptions_for_regular_tasks)
-    print("GraphEnv initialized successfully!", flush=True)
-    
-    print("Resetting environment...", flush=True)
+
+    # Reset the environment
     obs, info = env.reset()
-    print("Environment reset complete!", flush=True)
+    print("Environment initialized and reset")
     
-    print("\n=== Test: Light Control Without Confirmations ===", flush=True)
-    # Create light control tasks from controller 4 to multiple lights
-    print("Creating light control tasks...", flush=True)
-    light_tasks, success = env.lights_scenario("4", importance=5)
+    # First run time steps to populate sensor data
+    print("Running initial time steps to populate sensor data...")
+    for _ in range(30):  # Run more steps to ensure sensor data is collected
+        env.time_step()
     
-    if success:
-        print(f"Successfully created {len(light_tasks)} light control tasks", flush=True)
+    # The specific controllers and sensor we want to use
+    controller_3_id = "3"
+    controller_4_id = "4"
+    target_sensor_id = "41"
+    target_light = "76"
+    
+    controller_3 = env.find_edge_vertex(controller_3_id)
+    controller_4 = env.find_edge_vertex(controller_4_id)
+    
+    if not controller_3 or not controller_4:
+        print(f"Error: Could not find controller 3 or 4")
+        exit(1)
+    
+    print(f"Using controller {controller_3_id} as source (task creator)")
+    print(f"Using controller {controller_4_id} as confirmation provider")
+    
+    # Make sure controller 4 has sensors_info
+    if "sensors_info" not in controller_4:
+        controller_4["sensors_info"] = {}
+    
+    # Always create/update the sensor info for sensor 41 on controller 4
+    # This ensures we have the data needed for the confirmation
+    controller_4["sensors_info"][target_sensor_id] = {
+        "info": {
+            "movement": 2.28,  # Using the value from your error message
+            "speed": 5
+        },
+        "timestamp": env.time
+    }
+    
+    # Verify the sensor info was properly set
+    if target_sensor_id not in controller_4["sensors_info"]:
+        print(f"Error: Failed to create sensor info for {target_sensor_id}")
+        exit(1)
         
-        # Run until all tasks are complete
-        print("Running environment step...", flush=True)
+    # Get the sensor parameter and value that we'll use for confirmation
+    sensor_parameter = "movement"
+    sensor_value = controller_4["sensors_info"][target_sensor_id]["info"][sensor_parameter]
+    
+    # Double check that the sensor info is there
+    print(f"Verified sensor {target_sensor_id} with {sensor_parameter}={sensor_value} at controller {controller_4_id}")
+    
+    # Create light control task at controller 3
+    control_task = {
+        "task_id": env.task_id,
+        "task_name": "control_light",
+        "task_location": controller_3_id,  # Starting from controller 3
+        "target": target_light,
+        "importance": 6,
+        "start_time": env.time,
+        "task_size": 1000,
+        "sram_usage": 4000,
+        "parameters_to_change": {
+            "brightness": 200,
+            "isOn": 1,
+            "duration": 5,
+        }
+    }
+    env.task_id += 1
+    
+    # Set confirmation threshold higher than the current value to ensure it passes
+    threshold_value = sensor_value + 100  
+    
+    # Create confirmation requirement for sensor 41 data from controller 4
+    confirmation = {
+        "sensor_id": target_sensor_id,
+        "condition": {
+            "comparing parameter": sensor_parameter,
+            "type": "less_than",
+            "value": threshold_value
+        },
+        "importance": 8
+    }
+    
+    print(f"Setting up confirmation: Check if {sensor_parameter}={sensor_value} is less than {threshold_value}")
+    
+    # Create task with confirmation
+    task_with_confirmation = env.create_task_with_confirmation_needed(control_task, [confirmation])
+    
+    # Print the controllers' sensor info for debugging
+    print(f"\nController 3 has info for sensors: {list(controller_3.get('sensors_info', {}).keys())}")
+    print(f"Controller 4 has info for sensors: {list(controller_4.get('sensors_info', {}).keys())}")
+    
+    # Handle the task with confirmation
+    print("\nProcessing task with confirmation between controllers 3 and 4...")
+    try:
+        env.handle_task_with_confirmation(task_with_confirmation)
+        
+        # Use step() to process the environment until completion
+        print("\nUsing step() function to process all tasks until completion...")
         obs, reward, done, info = env.step([])
         
-        # Print final results
-        print("\n=== Final Results ===")
-        print(f"Steps taken: {info['steps_taken']}")
+        # Check if light was controlled
+        light = env.find_edge_vertex(target_light)
+        print("\n=== Task Completion Results ===")
+        print(f"Environment processed {info['steps_taken']} steps")
         print(f"Total time elapsed: {info['time']}ms")
         print(f"Total reward accumulated: {reward}")
         
-        # Check final state of lights
-        for light_id in usfl_arr.light[:5]:  # Check first 3 lights only
-            light = env.find_edge_vertex(light_id)
-            if light:
-                print(f"\nLight {light_id} final state:")
-                print(f"IsOn: {light.get('isOn', 'N/A')}")
-                print(f"Brightness: {light.get('brightness', 'N/A')}")
-    else:
-        print("Failed to create light control tasks")
+        if light:
+            print(f"\nTarget light {target_light} final state:")
+            print(f"IsOn: {light.get('isOn', 'N/A')}")
+            print(f"Brightness: {light.get('brightness', 'N/A')}")
+        else:
+            print(f"Error: Could not find light {target_light}")
+    except ValueError as e:
+        print(f"Error during confirmation test: {e}")
