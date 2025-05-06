@@ -27,8 +27,8 @@ def test_env_manually(env):
     print("\nTesting light control scenario with multiple random steps...")
 
     
-    total_steps = 2  # Reduced total steps but with more actions per step
-    actions_per_step = 0  # Use 100 actions per step
+    total_steps = 5  # Reduced total steps but with more actions per step
+    actions_per_step = 10  # Use 100 actions per step
     print(f"\nRunning {total_steps} steps with {actions_per_step} random actions each for lights scenario:")
     rewards = []
     

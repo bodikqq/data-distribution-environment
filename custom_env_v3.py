@@ -165,11 +165,21 @@ class GraphEnv(gym.Env):
             matrix = []
         elif len(matrix[0]) != 2:
             raise ValueError("Matrix must have exactly 2 columns (sensor_id, target)")
-            
+        unique_matrix = []
+        seen = set()
+        skipped = 0
+        for row in matrix:                         # each row like [sensor_id, target, …]
+            pair = (row[0], row[1])                # (sensor_id, target)
+            if pair in seen:
+                skipped += 1                       # duplicate → skip
+                continue                           # duplicate → skip
+            seen.add(pair)
+            unique_matrix.append(row)
+        print(f"SKIPPED {skipped} DUPLICATE TASKS", flush=True)
         # Process all tasks in the matrix
-        for i in range(len(matrix)):
-            sensor_id = matrix[i][0]
-            target = matrix[i][1]
+        for i in range(len(unique_matrix)):
+            sensor_id = unique_matrix[i][0]
+            target = unique_matrix[i][1]
             try:
                 self.add_new_regular_task(sensor_id, target)
             except Exception as e:
@@ -177,18 +187,16 @@ class GraphEnv(gym.Env):
 
         max_steps = 1000  # Safety limit to prevent infinite loops
         step_count = 0
-        #for _ in range(10):
-        #    self.time_step()
-        #if self.scenario == "light":
-            #self.lights_scenario("4", importance=5)
+        for _ in range(20):
+            self.time_step()
+        if self.scenario == "light":
+            self.lights_scenario("4", importance=5)
+        elif self.scenario == "complex_light":
+            self.complex_light_scenario(["room8","room9","room10"], 4)
         while step_count < max_steps:
             # Check if there are any non-info tasks remaining
             non_info_tasks_remain = self.check_non_info_tasks()
                     
-            # Check confirmation tasks
-            if self.confirmation_tasks or self.tasks_awaiting_confirmation:
-                non_info_tasks_remain = True
-                
             # If no non-info tasks remain, break the loop
             if not non_info_tasks_remain:
                 break
@@ -209,32 +217,27 @@ class GraphEnv(gym.Env):
 
     def check_non_info_tasks(self):
         found_non_info = False # Flag to track if we found any
-
         # Check vertices
         for vertex in self.graph["vertices"]:
             for task in vertex.get("tasks", []):
                 task_name = task.get("task_name", "UNKNOWN_NAME")
                 if task_name != "info_task":
-                    
                     found_non_info = True
-                    # Don't return immediately, let's see if there are others
-
         # Check connections
         for connection in self.graph["connections"]:
             for task in connection.get("tasks", []):
                 task_name = task.get("task_name", "UNKNOWN_NAME")
                 if task_name != "info_task":
-                   
                     found_non_info = True
                     # Don't return immediately
 
         # Check confirmation dictionaries
         if self.tasks_awaiting_confirmation:
-
             found_non_info = True
-        if self.confirmation_tasks:
+        #if self.confirmation_tasks:
+        #    tasks.append(self.confirmation_tasks)
+        #    found_non_info = True
 
-            found_non_info = True
         return found_non_info # Return the collected status
     def process_tasks(self):
         """Process tasks in vertices and move them to appropriate connections if possible."""
@@ -289,7 +292,7 @@ class GraphEnv(gym.Env):
                     if "usedSRAM" in vertex:
                         vertex["usedSRAM"] = max(0, vertex["usedSRAM"] - task.get("sram_usage", 0))
 
-    def create_info_task(self, location, target_controller, importance=7, task_size=100, sram_usage=4000):
+    def create_info_task(self, location, target_controller, importance=7, task_size=20, sram_usage=4000):
 # Get sensor type
         source_vertex = self.find_edge_vertex(str(location))
         if not source_vertex:
@@ -438,14 +441,9 @@ class GraphEnv(gym.Env):
                 # If target is not specified, use pre-calculated closest controller
                 target = description["target"]
                 if target is None and vertex.get("closest_controller"):
-                    target = vertex["closest_controller"]["id"]
+                    target = vertex["closest_controller"]["id"] # Assuming it stores the ID directly
                 elif target is None:
-                    try:
-                        target = self.handle_closest_controller(str(vertex["id"]))
-                    except ValueError as e:
-                        raise Exception(f"Error finding controller for vertex {vertex['id']}: {e}")
-                
-                # Remove debug print for vertex 4's info tasks
+                    target = usfl_func.find_closest_controller(self.graph, str(vertex["id"]))
                 
                 # Create and add task
                 task = self.create_info_task(vertex["id"], target, description["importance"], description["task_size"], description["sram_usage"])
@@ -466,17 +464,6 @@ class GraphEnv(gym.Env):
                 self.task_id += 1
         
         return created_tasks
-
-    def handle_closest_controller(self, vertex_id):
-        vertex = self.find_edge_vertex(str(vertex_id))
-        if not vertex:
-            raise ValueError(f"Vertex {vertex_id} not found")
-            
-        if "closest_controller" not in vertex:
-            vertex["closest_controller"] = usfl_func.find_closest_controller(self.graph, str(vertex["id"]))
-            
-        return vertex["closest_controller"]
-
     def lights_scenario(self, starting_vertex, targets = [], importance=4):
         """Create tasks for controlling lights from a starting vertex.
         
@@ -554,22 +541,24 @@ class GraphEnv(gym.Env):
             float: The calculated reward
         """
         # Base reward for different task types
-        base_rewards = {
-            "control_light": 0.2,
-            "confirmation_task": 0.08,
-            "confirmation_answer": 0.08
+        rewards_multiplier = {
+            "control_light": 1,
+            "confirmation_task": 0.8,
+            "confirmation_answer": 0.8
         }
         
-        base_reward = base_rewards.get(task.get("task_name", ""), 0.1)
+        reward_multiplier = rewards_multiplier.get(task.get("task_name", ""), 0.1)
         
         # Speed bonus calculation
-        time_taken = self.time - task["start_time"]
-        print(task["start_time"], self.time, time_taken)
-        # Maximum expected time is 1000ms, minimum is 10ms
-        normalized_time = max(0, min(1, 1 - ((time_taken - 10) / 990)))
-        speed_bonus = normalized_time * 0.15  # Up to 0. bonus for speed
-        bonus_for_importance = task.get("importance", 4) / 100  # Scale importance to a 0-1 range
-        return base_reward + speed_bonus + bonus_for_importance
+        if task.get("locally_confirmed"):
+            # Treat locally confirmed tasks as taking minimal time for reward calc
+            time_taken = self.time_step_in_ms # Use time_step as minimal duration
+            print(f"  (Locally confirmed task {task['task_id']}, using minimal time_taken: {time_taken}ms)")
+        else:
+            time_taken = self.time - task["start_time"]
+
+        reward = reward_multiplier * usfl_func.reward_calculator(time_taken) * ((task.get("importance", 1)/10))
+        return reward
 
     def update_reward(self, task):
         """Update the environment reward when a task is completed."""
@@ -753,12 +742,12 @@ class GraphEnv(gym.Env):
         task = task_with_confirmation["task"]
         confirmations = task_with_confirmation["confirmations"]
         
-        # Store task in awaiting confirmations
         self.tasks_awaiting_confirmation[task["task_id"]] = {
             "task": task,
             "confirmations_needed": len(confirmations),
             "confirmations_received": 0,
-            "all_confirmed": True
+            "all_confirmed": True,
+            "remote_check_initiated": False # Initialize flag for remote checks
         }
         
         # Get the current controller
@@ -778,9 +767,12 @@ class GraphEnv(gym.Env):
                 continue
                 
             # If not, find the closest controller that might have the info
+            # Mark that a remote check is needed BEFORE creating the task
+            self.tasks_awaiting_confirmation[task["task_id"]]["remote_check_initiated"] = True
             closest_controller = self._find_controller_with_sensor_info(current_controller["id"], sensor_id_str)
             
             if not closest_controller:
+                # Reset flag if we fail to find a controller? Or let it fail? Let it fail for now.
                 raise ValueError(f"No controller has information for sensor {sensor_id}")
                 
             # Create confirmation task to send to the closest controller
@@ -894,6 +886,11 @@ class GraphEnv(gym.Env):
             # All confirmations successful, proceed with original task
             original_task = awaiting_task["task"]
             
+            # Check if all confirmations were local
+            if not awaiting_task.get("remote_check_initiated", False):
+                 original_task["locally_confirmed"] = True
+                 print(f"  Task {original_task['task_id']} confirmed locally.")
+
             # Get the controller that should execute the task - this is where the task should be located,
             # not on the target vertex directly
             controller_vertex = self.find_edge_vertex(str(original_task["task_location"]))
@@ -935,7 +932,7 @@ class GraphEnv(gym.Env):
                     # Find the controller where the answer arrived (which is the target of the answer task)
                     controller_vertex = self.find_edge_vertex(str(answer_task["target"]))
 
-                    if controller_vertex:
+                    if (controller_vertex):
                         if "tasks" not in controller_vertex:
                             controller_vertex["tasks"] = []
                         # Add the original task to the CONTROLLER's queue to start its journey
@@ -1072,9 +1069,110 @@ class GraphEnv(gym.Env):
         """Find vertex by edge ID.        """
         for vertex in self.graph["vertices"]:
             if str(vertex["id"]) == str(edge_id):
-                return vertex
+                return vertex # Return the vertex if found
         return None
-    
+
+    def complex_light_scenario(self, room_ids: List[Union[str, int]], starting_controller_id: Union[str, int]):
+        """
+        Turns on lights in specified rooms if temperature < 1000 and LiDAR > 0.
+
+        Args:
+            room_ids: List of room names (e.g., ["room8", "room9"]) or IDs.
+            starting_controller_id: The ID of the controller initiating the scenario.
+        """
+        starting_controller_id = str(starting_controller_id)
+        controller_vertex = self.find_edge_vertex(starting_controller_id)
+        if not controller_vertex or controller_vertex.get("label") != "controller":
+            print(f"Error: Starting ID {starting_controller_id} is not a valid controller.")
+            return
+
+        if "tasks" not in controller_vertex:
+            controller_vertex["tasks"] = []
+
+        for room_name in room_ids:
+            if room_name not in usfl_arr.rooms:
+                print(f"Warning: Room '{room_name}' not found in usefull_arrays. Skipping.")
+                continue
+
+            room_data = usfl_arr.rooms[room_name]
+            light_ids = room_data.get("lights", [])
+            temp_sensor_id = room_data.get("temperature")
+            lidar_sensor_id = room_data.get("LiDAR")
+
+            if not light_ids:
+                print(f"Warning: No lights found for room '{room_name}'. Skipping.")
+                continue
+            if not temp_sensor_id:
+                print(f"Warning: No temperature sensor found for room '{room_name}'. Cannot apply condition.")
+                # Decide if you want to skip or proceed without temp check
+                continue
+            if not lidar_sensor_id:
+                print(f"Warning: No LiDAR sensor found for room '{room_name}'. Cannot apply condition.")
+                # Decide if you want to skip or proceed without lidar check
+                continue
+
+            # --- Create Confirmation Conditions ---
+            confirmations = []
+            # Temperature condition
+            confirmations.append({
+                "sensor_id": str(temp_sensor_id),
+                "condition": {
+                    "type": "less_than",
+                    "value": 1000,
+                    "comparing parameter": "temperature"
+                },
+                "importance": 8 # High importance for conditions
+            })
+            # LiDAR condition (assuming LiDAR info has a 'people_count' or similar key)
+            # IMPORTANT: Adjust "comparing parameter" based on actual LiDAR info structure
+            confirmations.append({
+                "sensor_id": str(lidar_sensor_id),
+                "condition": {
+                    "type": "greater_than",
+                    "value": 0,
+                    "comparing parameter": "distance" # Placeholder: Change to the actual parameter name for people count
+                },
+                "importance": 8
+            })
+
+            # --- Create Light Control Tasks with Confirmation ---
+            for light_id in light_ids:
+                light_id_str = str(light_id)
+                # Create the main task (control_light)
+                light_task = {
+                    "task_id": self.task_id,
+                    "task_name": "control_light",
+                    "task_location": starting_controller_id, # Task originates from the controller
+                    "target": light_id_str,
+                    "importance": 5, # Example importance
+                    "start_time": self.time,
+                    "task_size": 100,
+                    "sram_usage": 40,
+                    "parameters_to_change": {
+                        "brightness": 8, # Example: Set brightness to 8
+                        "isOn": 1,       # Turn the light on
+                    }
+                }
+                self.task_id += 1
+
+                # Bundle task with confirmations
+                task_with_confirmation = self.create_task_with_confirmation_needed(
+                    task=light_task,
+                    confirmations=confirmations
+                )
+
+                # Handle the task (initiate confirmation process)
+                try:
+                    # Ensure the task starts its confirmation journey from the controller
+                    # The handle_task_with_confirmation expects the task's location to be the controller
+                    self.handle_task_with_confirmation(task_with_confirmation)
+                    print(f"Initiated light control task {light_task['task_id']} for light {light_id_str} in {room_name} with confirmations.")
+                except Exception as e:
+                    print(f"Error initiating task for light {light_id_str} in {room_name}: {e}")
+                    # Decrement task_id if creation failed before handling
+                    self.task_id -= 1
+
+
     def scenarios_for_rooms(self,room_ids,starting_controller):
         for room_id in room_ids:
             room_id = int(room_id)
@@ -1099,119 +1197,3 @@ if __name__ == "__main__":
     print("\n=== Testing Cross-Controller Confirmation with sensor 41 ===\n")
     env = GraphEnv(usfl_arr.descriptions_for_regular_tasks)
 
-    # Reset the environment
-    obs, info = env.reset()
-    print("Environment initialized and reset")
-    
-    # First run time steps to populate sensor data
-    print("Running initial time steps to populate sensor data...")
-    for _ in range(30):  # Run more steps to ensure sensor data is collected
-        env.time_step()
-    
-    # The specific controllers and sensor we want to use
-    controller_3_id = "3"
-    controller_4_id = "4"
-    target_sensor_id = "41"
-    target_light = "76"
-    
-    controller_3 = env.find_edge_vertex(controller_3_id)
-    controller_4 = env.find_edge_vertex(controller_4_id)
-    
-    if not controller_3 or not controller_4:
-        print(f"Error: Could not find controller 3 or 4")
-        exit(1)
-    
-    print(f"Using controller {controller_3_id} as source (task creator)")
-    print(f"Using controller {controller_4_id} as confirmation provider")
-    
-    # Make sure controller 4 has sensors_info
-    if "sensors_info" not in controller_4:
-        controller_4["sensors_info"] = {}
-    
-    # Always create/update the sensor info for sensor 41 on controller 4
-    # This ensures we have the data needed for the confirmation
-    controller_4["sensors_info"][target_sensor_id] = {
-        "info": {
-            "movement": 2.28,  # Using the value from your error message
-            "speed": 5
-        },
-        "timestamp": env.time
-    }
-    
-    # Verify the sensor info was properly set
-    if target_sensor_id not in controller_4["sensors_info"]:
-        print(f"Error: Failed to create sensor info for {target_sensor_id}")
-        exit(1)
-        
-    # Get the sensor parameter and value that we'll use for confirmation
-    sensor_parameter = "movement"
-    sensor_value = controller_4["sensors_info"][target_sensor_id]["info"][sensor_parameter]
-    
-    # Double check that the sensor info is there
-    print(f"Verified sensor {target_sensor_id} with {sensor_parameter}={sensor_value} at controller {controller_4_id}")
-    
-    # Create light control task at controller 3
-    control_task = {
-        "task_id": env.task_id,
-        "task_name": "control_light",
-        "task_location": controller_3_id,  # Starting from controller 3
-        "target": target_light,
-        "importance": 6,
-        "start_time": env.time,
-        "task_size": 1000,
-        "sram_usage": 4000,
-        "parameters_to_change": {
-            "brightness": 200,
-            "isOn": 1,
-            "duration": 5,
-        }
-    }
-    env.task_id += 1
-    
-    # Set confirmation threshold higher than the current value to ensure it passes
-    threshold_value = sensor_value + 100  
-    
-    # Create confirmation requirement for sensor 41 data from controller 4
-    confirmation = {
-        "sensor_id": target_sensor_id,
-        "condition": {
-            "comparing parameter": sensor_parameter,
-            "type": "less_than",
-            "value": threshold_value
-        },
-        "importance": 8
-    }
-    
-    print(f"Setting up confirmation: Check if {sensor_parameter}={sensor_value} is less than {threshold_value}")
-    
-    # Create task with confirmation
-    task_with_confirmation = env.create_task_with_confirmation_needed(control_task, [confirmation])
-    
-    # Print the controllers' sensor info for debugging
-    print(f"\nController 3 has info for sensors: {list(controller_3.get('sensors_info', {}).keys())}")
-    print(f"Controller 4 has info for sensors: {list(controller_4.get('sensors_info', {}).keys())}")
-    
-    # Handle the task with confirmation
-    print("\nProcessing task with confirmation between controllers 3 and 4...")
-    try:
-        env.handle_task_with_confirmation(task_with_confirmation)
-        
-        # Use step() to process the environment until completion
-        print("\nUsing step() function to process all tasks until completion...")
-        obs, reward, done, info = env.step([])
-        
-        # Check if light was controlled
-        light = env.find_edge_vertex(target_light)
-        print("\n=== Task Completion Results ===")
-        print(f"Environment processed {info['steps_taken']} steps")
-        print(f"Total time elapsed: {info['time']}ms")
-        print(f"Total reward accumulated: {reward}")
-        
-        if light:
-            print(f"\nTarget light {target_light} final state:")
-            print(f"IsOn: {light.get('isOn', 'N/A')}")
-            print(f"Brightness: {light.get('brightness', 'N/A')}")
-        else:
-            print(f"Error: Could not find light {target_light}")
-    except ValueError as e:
-        print(f"Error during confirmation test: {e}")

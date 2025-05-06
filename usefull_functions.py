@@ -1,3 +1,4 @@
+import math
 def get_vertex_tasks(graph):
     """Get all tasks currently in vertices."""
     all_tasks = []
@@ -153,3 +154,20 @@ def find_closest_controller(graph, vertex_id):
         raise ValueError(f"No reachable controller found for vertex {vertex_id}")
         
     return closest_controller
+def reward_calculator(t_ms: float) -> float: 
+    t_flat: float = 30.0          # up-to-here reward = 1
+    t_break: float = 800.0        # end of linear part
+    r_flat: float = 1.0           # reward in flat section
+    r_break: float = 0.15         # reward at t_break
+    a: float = 1.0
+    if t_ms <= t_flat:
+        return r_flat
+
+    if t_ms <= t_break:
+        # slope chosen so that line hits (t_break, r_break)
+        m = (r_break - r_flat) / (t_break - t_flat)
+        return r_flat + m * (t_ms - t_flat)
+
+    # logarithmic tail
+    # guard against log(0) by ensuring argument > 0 (t_ms > t_break by construction)
+    return r_break / (1.0 + a * math.log(t_ms / t_break))
