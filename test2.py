@@ -5,13 +5,16 @@ from custom_env_v3 import GraphEnv
 import usefull_arrays as usfl_arr
 import numpy as np
 import traceback
+import time # Import the time module
 
 def test_complex_scenario(env, num_runs=3, actions_per_run=5):
     """Test the complex light scenario multiple times with additional random actions."""
+    start_time = time.time() # Record start time
     print(f"\nTesting complex light scenario for {num_runs} runs...")
 
     all_run_rewards = []
-
+    all_times = []
+    all_run_results = [] # To store (reward, time) pairs
     for run in range(num_runs):
         print(f"\n===== Run {run + 1}/{num_runs} =====")
 
@@ -34,7 +37,7 @@ def test_complex_scenario(env, num_runs=3, actions_per_run=5):
         
 
         # Run the environment step to process the scenario and random actions
-        all_times = []
+        
         print(f"\nProcessing scenario tasks and {len(random_actions)} additional actions using env.step()...")
         try:
             # Pass the generated random actions to the step function
@@ -44,6 +47,7 @@ def test_complex_scenario(env, num_runs=3, actions_per_run=5):
             print(f"-> Info for this run: {info}")
             all_run_rewards.append(reward)
             all_times.append(info["time"])
+            all_run_results.append((reward, info["time"])) # Store as a pair
 
             # --- Post-Scenario Check ---
             print("\n--- Post-Scenario Light State ---")
@@ -72,10 +76,16 @@ def test_complex_scenario(env, num_runs=3, actions_per_run=5):
         print(f"Average reward: {np.mean(all_run_rewards):.4f}")
         print(f"Min reward: {min(all_run_rewards):.4f}")
         print(f"Max reward: {max(all_run_rewards):.4f}")
-        print(f"Times: {all_times}")
+        print(f"Reward and Time pairs for each run:")
+        for i, (r, t) in enumerate(all_run_results):
+            print(f"  Run {i+1}: Reward={r:.4f}, Time={t:.4f}s")
         print(f"Are all rewards the same? {len(set(all_run_rewards)) == 1}")
     else:
         print("No runs completed successfully.")
+
+    end_time = time.time() # Record end time
+    execution_time = end_time - start_time
+    print(f"\nTotal execution time for test_complex_scenario: {execution_time:.4f} seconds")
 
     return len(all_run_rewards) > 0 # Return True if at least one run succeeded
 
@@ -86,7 +96,7 @@ if __name__ == "__main__":
         print("Created environment successfully for complex light test")
 
         # Run the complex scenario test multiple times
-        num_test_runs = 3 # How many times to run the scenario
+        num_test_runs = 25 # How many times to run the scenario
         num_random_actions = 200 # How many extra random tasks to add each run
         if test_complex_scenario(env, num_runs=num_test_runs, actions_per_run=num_random_actions):
             print("\nComplex scenario testing completed.")
