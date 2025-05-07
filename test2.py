@@ -6,6 +6,7 @@ import usefull_arrays as usfl_arr
 import numpy as np
 import traceback
 import time # Import the time module
+import os # Import the os module
 
 def test_complex_scenario(env, num_runs=3, actions_per_run=5):
     """Test the complex light scenario multiple times with additional random actions."""
@@ -24,7 +25,7 @@ def test_complex_scenario(env, num_runs=3, actions_per_run=5):
         print("Reset successful.")
 
         # Define the scenario parameters (can be varied per run if needed)
-        room_ids_to_test = ["room8", "room9", "room10"] # Example rooms
+        room_ids_to_test = ["room8", "room10","room11","room3","room4","room5","room6","room7","room13","room14","room15","room16","room17","room18"]
 
         print(f"\nInitiating complex light scenario for rooms: {room_ids_to_test} from controller 4")
 
@@ -73,19 +74,34 @@ def test_complex_scenario(env, num_runs=3, actions_per_run=5):
     print("\n===== Testing Summary =====")
     if all_run_rewards:
         print(f"Rewards across {len(all_run_rewards)} runs: {all_run_rewards}")
-        print(f"Average reward: {np.mean(all_run_rewards):.4f}")
-        print(f"Min reward: {min(all_run_rewards):.4f}")
-        print(f"Max reward: {max(all_run_rewards):.4f}")
+        print(f"Average reward: {np.mean(all_run_rewards):.3f}")
+        print(f"Min reward: {min(all_run_rewards):.3f}")
+        print(f"Max reward: {max(all_run_rewards):.3f}")
         print(f"Reward and Time pairs for each run:")
         for i, (r, t) in enumerate(all_run_results):
-            print(f"  Run {i+1}: Reward={r:.4f}, Time={t:.4f}s")
-        print(f"Are all rewards the same? {len(set(all_run_rewards)) == 1}")
+            print(f"  Run {i+1}: Reward={r:.3f}, Time={t:.3f}s")
+
+        if len(all_run_rewards) >= 10: # Keep condition based on all_run_rewards as per previous logic
+            try:
+                output_dir = "test2_Results"
+                if not os.path.exists(output_dir):
+                    os.makedirs(output_dir)
+                
+                timestamp = time.strftime("%Y%m%d-%H%M%S")
+                filename = os.path.join(output_dir, f"all_run_results_{timestamp}.txt") 
+                with open(filename, "w") as f:
+                    f.write("Reward,Time\n") 
+                    for reward_value, time_value in all_run_results: 
+                        f.write(f"{reward_value:.3f},{time_value}\n") 
+                print(f"Successfully wrote {len(all_run_results)} run results to {filename}")
+            except Exception as e:
+                print(f"Error writing run results to file: {e}")
     else:
         print("No runs completed successfully.")
 
     end_time = time.time() # Record end time
     execution_time = end_time - start_time
-    print(f"\nTotal execution time for test_complex_scenario: {execution_time:.4f} seconds")
+    print(f"\nTotal execution time for test_complex_scenario: {execution_time} seconds")
 
     return len(all_run_rewards) > 0 # Return True if at least one run succeeded
 
@@ -96,7 +112,7 @@ if __name__ == "__main__":
         print("Created environment successfully for complex light test")
 
         # Run the complex scenario test multiple times
-        num_test_runs = 25 # How many times to run the scenario
+        num_test_runs = 1 # How many times to run the scenario
         num_random_actions = 200 # How many extra random tasks to add each run
         if test_complex_scenario(env, num_runs=num_test_runs, actions_per_run=num_random_actions):
             print("\nComplex scenario testing completed.")

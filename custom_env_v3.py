@@ -21,71 +21,32 @@ class GraphEnv(gym.Env):
     
 
     def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10,scenario = "light"):
-        super(GraphEnv, self).__init__()
+        super().__init__() # Ensure superclass is initialized
         self.json_path = json_path
-        self.time_step_in_ms = time_step
-        self.descriptions_for_regular_tasks = descriptions_for_regular_tasks
-        
-        print("Loading graph from JSON file...", flush=True)
-        # Load the graph from the JSON file
-        with open(json_path, 'r') as f:
-            self.graph = json.load(f)
-        print(f"Graph loaded successfully: {len(self.graph.get('vertices', []))} vertices, {len(self.graph.get('connections', []))} connections", flush=True)
-            
-        # Create lookups for faster access
-        self._vertices_dict: Dict[str, Dict] = {str(v["id"]): v for v in self.graph.get("vertices", [])}
-        self._connections_dict: Dict[tuple[str, str], Dict] = {}
+        with open(self.json_path, 'r') as f:
+            self.initial_graph_data = json.load(f)
 
-        print("Initializing graph connections...", flush=True)
-        # Initialize graph components
-        for connection in self.graph.get("connections", []):
-            connection["tasks"] = []
-            connection["reserved_from_previous_step"] = 0
-            source_id_str = str(connection["source"])
-            target_id_str = str(connection["target"])
-            self._connections_dict[(source_id_str, target_id_str)] = connection
-            # If connections are effectively undirected for task routing, add reverse mapping
-            # This assumes one connection object for a pair, accessible from either direction.
-            self._connections_dict[(target_id_str, source_id_str)] = connection
-        print("Connections initialized", flush=True)
-            
-        print("Initializing vertices...", flush=True)
-        vertex_count = 0
-        # Initialize vertices by iterating through the values of the new dictionary
-        for vertex in self._vertices_dict.values():
-            vertex_count += 1
-            if vertex_count % 100 == 0:  # Print status every 100 vertices
-                print(f"Processed {vertex_count} vertices so far...", flush=True)
-                
-            vertex["tasks"] = []
-            if vertex.get("label") == "controller":
-                vertex["sensors_info"] = {}
-            elif vertex.get("label") != "controller":
-                try:
-                    closest_controller = usfl_func.find_closest_controller(self.graph, str(vertex["id"]))
-                    path = usfl_func.find_fastest_path(self.graph, str(vertex["id"]), closest_controller)
-                    distance = len(path) - 1
-                    vertex["closest_controller"] = {
-                        "id": closest_controller,
-                        "distance": distance
-                    }
-                except ValueError as e:
-                    print(f"Warning: Could not find closest controller for sensor {vertex['id']}: {e}")
-                    vertex["closest_controller"] = None
-        print("All vertices initialized", flush=True)
-    
-        # Initialize environment variables
+        self.graph = copy.deepcopy(self.initial_graph_data) # Working copy
+
+        # Initialize/ensure dynamic properties are present and lookups are built
+        self._initialize_graph_elements()
+
+        self.time_step_in_ms = time_step
         self.scenario = scenario
+        usfl_arr.descriptions_for_regular_tasks = descriptions_for_regular_tasks
+        
         self.time = 0
-        self.task_id = 1
+        self.task_id = 1  # Initialize task_id
+        # ... (rest of the original __init__ content, like action/observation spaces)
+        # Make sure self.reward, self.tasks_awaiting_confirmation, etc. are initialized here
         self.reward = 0
         self.tasks_awaiting_confirmation = {}
         self.confirmation_tasks = {}
-        self.graph_copy = copy.deepcopy(self.graph)  # Use deepcopy instead of shallow copy
+        # self.graph_copy = copy.deepcopy(self.graph) # This is no longer needed for reset optimization
         self.observation = {
             "graph": self.graph,
         }
-        print("Environment variables initialized", flush=True)
+        print("Environment variables initialized")
         
         # Simplified action space for testing: List of [sensor_id, target] pairs
         # Each element is a tuple of two integers
@@ -95,7 +56,8 @@ class GraphEnv(gym.Env):
             shape=(10, 2),  # Up to 10 tasks per step, each with [sensor_id, target]
             dtype=np.int32
         )
-        
+        self.local_confirmation_counter = 0
+        self.non_local_confirmation_counter = 0
         # Simplified observation space
         self.observation_space = spaces.Dict({
             "graph": spaces.Dict({
@@ -123,6 +85,32 @@ class GraphEnv(gym.Env):
             })
         })
     
+    def _initialize_graph_elements(self):
+        """Helper to initialize graph elements and build lookups."""
+        for vertex in self.graph.get("vertices", []):
+            vertex.setdefault("tasks", [])
+            # Initialize usedSRAM from initial_graph_data or to 0
+            initial_v_data = next((v_init for v_init in self.initial_graph_data.get("vertices", []) if str(v_init["id"]) == str(vertex["id"])), None)
+            if initial_v_data:
+                vertex["usedSRAM"] = initial_v_data.get("usedSRAM", 0)
+            else:
+                vertex["usedSRAM"] = 0 # Default
+
+            if vertex.get("label") == "controller":
+                vertex.setdefault("sensors_info", {})
+
+        for conn in self.graph.get("connections", []):
+            conn.setdefault("tasks", [])
+            conn.setdefault("reserved_from_previous_step", 0)
+
+        self._vertices_dict = {str(v["id"]): v for v in self.graph.get("vertices", [])}
+        self._connections_lookup = {} # Key: frozenset({str(source_id), str(target_id)}), Value: list of connection dicts
+        for conn in self.graph.get("connections", []):
+            key = frozenset({str(conn["source"]), str(conn["target"])})
+            if key not in self._connections_lookup:
+                self._connections_lookup[key] = []
+            self._connections_lookup[key].append(conn)
+
     def reset(self, seed=None, options=None):
         """Reset the environment to initial state.
         
@@ -140,30 +128,43 @@ class GraphEnv(gym.Env):
         self.time = 0
         self.task_id = 1
         self.reward = 0
-        usfl_arr.reset_regular_tasks()
+        usfl_arr.reset_regular_tasks() # Assuming this is external and correct
+        
         # Reset task-related dictionaries
         self.tasks_awaiting_confirmation = {}
         self.confirmation_tasks = {}
         
-        # Use a deep copy of the original graph
-        self.graph = copy.deepcopy(self.graph_copy)
+        # Reset graph state IN-PLACE
+        for vertex_id_str, vertex in self._vertices_dict.items():
+            vertex["tasks"] = []
+            
+            # Restore usedSRAM from the initial template data
+            initial_v_data = next((v_init for v_init in self.initial_graph_data.get("vertices", []) if str(v_init["id"]) == vertex_id_str), None)
+            if initial_v_data:
+                vertex["usedSRAM"] = initial_v_data.get("usedSRAM", 0)
+            else:
+                # This case should ideally not be hit if _vertices_dict is derived from initial_graph_data
+                vertex["usedSRAM"] = 0 
+
+            if vertex.get("label") == "controller":
+                vertex["sensors_info"] = {} # Clear sensor info
+
+        # Reset connections tasks and reserved bandwidth
+        for conn_list in self._connections_lookup.values():
+            for conn in conn_list:
+                conn["tasks"] = []
+                conn["reserved_from_previous_step"] = 0
         
-        # Rebuild the lookup dictionaries
-        self._vertices_dict = {str(v["id"]): v for v in self.graph.get("vertices", [])}
-        self._connections_dict = {}
-        for connection in self.graph.get("connections", []):
-            # Tasks and reserved_from_previous_step should be part of the deepcopy
-            source_id_str = str(connection["source"])
-            target_id_str = str(connection["target"])
-            self._connections_dict[(source_id_str, target_id_str)] = connection
-            self._connections_dict[(target_id_str, source_id_str)] = connection
+        # If any part of the graph structure itself (not just dynamic fields) was meant to be reset
+        # from graph_copy and _initialize_graph_elements doesn't cover it,
+        # self.graph = copy.deepcopy(self.initial_graph_data) would be needed,
+        # followed by self._initialize_graph_elements() or just rebuilding lookups.
+        # For now, assuming only dynamic fields need reset.
 
         # Update observation
-        self.observation = {
-            "graph": self.graph,
-        }
+        self.observation = {"graph": self.graph}
         
-        return self.observation, {}
+        return self.observation, {} # Return observation and an empty info dict
 
     def step(self, matrix):
         """Process an Nx2 matrix where each row contains a sensor ID and target, and advance the environment until all non-info tasks are complete.
@@ -195,7 +196,7 @@ class GraphEnv(gym.Env):
                 continue                           # duplicate → skip
             seen.add(pair)
             unique_matrix.append(row)
-        print(f"SKIPPED {skipped} DUPLICATE TASKS", flush=True)
+        print(f"SKIPPED {skipped} DUPLICATE TASKS")
         # Process all tasks in the matrix
         for i in range(len(unique_matrix)):
             sensor_id = unique_matrix[i][0]
@@ -209,10 +210,10 @@ class GraphEnv(gym.Env):
         step_count = 0
         for _ in range(20):
             self.time_step()
-        if self.scenario == "light":
-            self.lights_scenario("4", importance=5)
-        elif self.scenario == "complex_light":
-            self.complex_light_scenario(["room8","room9","room10"], 4)
+        #if self.scenario == "light":
+        #    self.lights_scenario("4", importance=5)
+        if self.scenario == "complex_light":
+            self.complex_light_scenario(["room8", "room10","room11","room3","room4","room5","room6","room7","room13","room14","room15","room16","room17","room18"], 4)
         while step_count < max_steps:
             # Check if there are any non-info tasks remaining
             non_info_tasks_remain = self.check_non_info_tasks()
@@ -223,6 +224,16 @@ class GraphEnv(gym.Env):
                 
             # Process time steps
             self.time_step()
+            
+            # Check for SRAM reaching 70% threshold after each time step, but only for controllers
+            for controller_id in usfl_arr.controllers:
+                controller = self._vertices_dict.get(str(controller_id))
+                if controller and "usedSRAM" in controller and "maxSRAM" in controller and controller["maxSRAM"] > 0:
+                    sram_usage_percentage = (controller["usedSRAM"] / controller["maxSRAM"]) * 100
+                    if sram_usage_percentage >= 70:
+                        print(f"⚠️ SRAM usage at controller {controller_id} has reached {sram_usage_percentage:.1f}% of maximum capacity. Terminating step.")
+                        return self.observation, -300, True, {"error": "SRAM usage threshold exceeded"}
+                    
             step_count += 1
         
         # Return the standard gym environment outputs
@@ -232,6 +243,8 @@ class GraphEnv(gym.Env):
             "num_tasks": self.task_id - 1,
             "steps_taken": step_count
         }
+        print(F"TOTAL LOCAL CONFIRMATIONS: {self.local_confirmation_counter}")
+        print(F"TOTAL NON-LOCAL CONFIRMATIONS: {self.non_local_confirmation_counter}")
         rewardq = self.reward
         return self.observation, rewardq, done, info
 
@@ -266,46 +279,47 @@ class GraphEnv(gym.Env):
             tasks_to_remove = []
             for task in vertex["tasks"]:
                 try:
-                    # current_vertex_id_str is vertex_id_str from the loop
                     target_vertex_id_str = str(task["target"])
                     
                     if vertex_id_str == target_vertex_id_str:
-                        # If this is the target, process the task
                         if self.do_task(task, target_vertex_id_str):
                             tasks_to_remove.append(task)
                         continue
                         
-                    # Find path to target - simplified: always use get_next_hop
-                    next_hop_id_str = usfl_func.get_next_hop(self.graph, vertex_id_str, target_vertex_id_str)
+                    # Use the optimized function, passing `self` (the GraphEnv instance)
+                    next_hop_id_str = usfl_func.get_next_hop(self, vertex_id_str, target_vertex_id_str)
                     
                     if next_hop_id_str is None:
                         print(f"Warning: No next hop found for task {task.get('task_id', 'N/A')} from {vertex_id_str} to {target_vertex_id_str}")
-                        continue # Skip task if no path
+                        continue 
 
-                    next_hop_id_str = str(next_hop_id_str) # Ensure string for dict key
+                    next_hop_id_str = str(next_hop_id_str) 
 
-                    # Find the connection to the next hop using the new dictionary
-                    connection = self._connections_dict.get((vertex_id_str, next_hop_id_str))
-                    
-                    if connection:
-                        max_tasks = 10 # Example: Allow up to 10 tasks per connection step
+                    # Find the connection to the next hop
+                    # Using _connections_lookup which stores lists of connections for a pair
+                    connection_key = frozenset({vertex_id_str, next_hop_id_str})
+                    connections_to_next_hop = self._connections_lookup.get(connection_key)
+
+                    if connections_to_next_hop: # Check if list is not empty
+                        # For simplicity, pick the first connection if multiple exist (e.g., parallel links)
+                        # More sophisticated logic could be added here if needed (e.g., load balancing)
+                        connection = connections_to_next_hop[0]
+                        max_tasks = 10 
                         if len(connection.get("tasks", [])) < max_tasks:
                             tasks_to_remove.append(task)
                             connection["tasks"].append(task)
-                            if(task["task_name"] != "info_task"):
-                                print(f" Moving task {task['task_id']} from {vertex_id_str} to {next_hop_id_str}")
-                        # else: # Optional: log if connection is full
+                            #if(task["task_name"] != "info_task"):
+                            #    print(f" Moving task {task['task_id']} from {vertex_id_str} to {next_hop_id_str}")
+                        # else: 
                             # print(f"Connection full for task {task['task_id']} from {vertex_id_str} to {next_hop_id_str}")
                     else:
-                        # This implies an issue with graph consistency or get_next_hop logic
                         print(f"Warning: Connection object not found between {vertex_id_str} and {next_hop_id_str} for task {task.get('task_id', 'N/A')}")
                             
                 except Exception as e:
                     print(f"Error processing task {task.get('task_id', 'N/A')} at vertex {vertex_id_str}: {e}")
                     continue 
                     
-            # Remove processed tasks from vertex
-            for task_to_remove in tasks_to_remove: # Renamed to avoid conflict
+            for task_to_remove in tasks_to_remove: 
                 if task_to_remove in vertex["tasks"]:
                     vertex["tasks"].remove(task_to_remove)
                     if "usedSRAM" in vertex:
@@ -445,106 +459,39 @@ class GraphEnv(gym.Env):
         for description in descriptions:
             if(self.time % description["frequency"] != 0):
                 continue
-            # Get vertices with matching label
             matching_vertices = []
-            for vertex in self._vertices_dict.values(): # Use optimized iteration
+            for vertex in self._vertices_dict.values(): 
                 if vertex["label"] == description["label"]:
                     if description["specific_ids"]:
-                        if str(vertex["id"]) in [str(id_val) for id_val in description["specific_ids"]]: # Ensure comparison with strings
+                        if str(vertex["id"]) in [str(id_val) for id_val in description["specific_ids"]]: 
                             matching_vertices.append(vertex)
                     else:
                         matching_vertices.append(vertex)
             
-            # For each matching vertex, create a task
             for vertex in matching_vertices:
-                # If target is not specified, use pre-calculated closest controller
                 target = description["target"]
-                if target is None and vertex.get("closest_controller"):
-                    target = vertex["closest_controller"]["id"] 
+                if target is None and vertex.get("closest_controller") and isinstance(vertex["closest_controller"], dict) and "id" in vertex["closest_controller"]:
+                    target = vertex["closest_controller"]["id"]
                 elif target is None:
-                    # Ensure vertex["id"] is string for usfl_func
-                    target = usfl_func.find_closest_controller(self.graph, str(vertex["id"]))
+                    # Use the optimized function, passing `self`
+                    target = usfl_func.find_closest_controller(self, str(vertex["id"]))
                 
-                # Create and add task
                 task = self.create_info_task(str(vertex["id"]), target, description["importance"], description["task_size"], description["sram_usage"])
                 
-                # Add task to vertex
                 if "tasks" not in vertex:
                     vertex["tasks"] = []
                     
-                # Check SRAM capacity if applicable
                 if "usedSRAM" in vertex and "maxSRAM" in vertex:
                     if vertex["usedSRAM"] + task["sram_usage"] > vertex["maxSRAM"]:
-                        # Original code had: raise (f"Warning: ...") which is unusual.
-                        # Changed to print warning and continue, common error handling.
                         print(f"Warning: Not enough SRAM in vertex {vertex['id']} for task {task['task_id']}")
                         continue    
                     vertex["usedSRAM"] = vertex.get("usedSRAM", 0) + task["sram_usage"]
                 
                 vertex["tasks"].append(task)
                 created_tasks.append(task)
-                # self.task_id += 1 # task_id is incremented in create_info_task
         
         return created_tasks
-    def lights_scenario(self, starting_vertex, targets = [], importance=4):
-        """Create tasks for controlling lights from a starting vertex.
-        
-        Args:
-            starting_vertex: ID of the vertex initiating the tasks
-            targets: List of target light IDs to control
-            importance: Priority level of the tasks
-                        
-        Returns:
-            Tuple[List[Dict], bool]: List of created tasks and success flag
-        """
-        if not targets:
-            # Take first 40 light IDs from usfl_arr.light
-            if len(usfl_arr.light) > 40:
-                targets = usfl_arr.light[:40]
-            else:
-                targets = usfl_arr.light
-        starting_vertex = str(starting_vertex)
-        
-        task_size = 100  # 100 bits
-        SRAMusage = 40  # 40 b 
-        
-        # Find source vertex and verify SRAM capacity
-        source_vertex = self.find_edge_vertex(starting_vertex)
-        if not source_vertex:
-            raise ValueError(f"Source vertex {starting_vertex} not found in graph vertices")
-            
-        if "usedSRAM" in source_vertex and "maxSRAM" in source_vertex:
-            if source_vertex["usedSRAM"] + SRAMusage * len(targets) > source_vertex["maxSRAM"]:
-                raise ValueError(f'Not enough SRAM in source vertex {starting_vertex} to create tasks: {source_vertex["usedSRAM"]}')
-
-        tasks = []
-        for target in targets:
-            task = {
-                "task_id": self.task_id,
-                "task_name": "control_light",
-                "task_location": starting_vertex,
-                "target": target,
-                "importance": importance,
-                "start_time": self.time,
-                "task_size": task_size,
-                "sram_usage": SRAMusage,
-                "parameters_to_change": {
-                    "brightness": 7,
-                    "isOn": 1,
-                    "duration": 10,
-                }
-            }
-            self.task_id += 1
-            tasks.append(task)
-
-                    # Add tasks to the source vertex
-        if "tasks" not in source_vertex:
-            source_vertex["tasks"] = []
-        source_vertex["tasks"].extend(tasks)
-        source_vertex["usedSRAM"] = source_vertex.get("usedSRAM", 0) + SRAMusage * len(tasks)
-
-        return tasks, True  # Return both tasks and success flag
-
+    
     def isController(self, id: Union[str, int]) -> bool:
         vertex = self.find_edge_vertex(str(id))
         if vertex and vertex.get("label") == "controller":
@@ -554,6 +501,8 @@ class GraphEnv(gym.Env):
     def calculate_task_reward(self, task):
         if task.get("task_name") == "info_task":
             return 0
+        if task.get("task_name") == "confirmation_task" or task.get("task_name") == "confirmation_answer":
+            self.non_local_confirmation_counter += 0.5
         """Calculate reward for completing a task based on speed and type.
         
         Args:
@@ -565,21 +514,16 @@ class GraphEnv(gym.Env):
         # Base reward for different task types
         rewards_multiplier = {
             "control_light": 1,
-            "confirmation_task": 0.8,
-            "confirmation_answer": 0.8
+            "confirmation_task": 0.25,
+            "confirmation_answer": 0.25
         }
-        
         reward_multiplier = rewards_multiplier.get(task.get("task_name", ""), 0.1)
         
         # Speed bonus calculation
-        if task.get("locally_confirmed"):
-            # Treat locally confirmed tasks as taking minimal time for reward calc
-            time_taken = self.time_step_in_ms # Use time_step as minimal duration
-            print(f"  (Locally confirmed task {task['task_id']}, using minimal time_taken: {time_taken}ms)")
-        else:
-            time_taken = self.time - task["start_time"]
+       
+        time_taken = self.time - task["start_time"]
 
-        reward = reward_multiplier * usfl_func.reward_calculator(time_taken) * ((task.get("importance", 1)/10))
+        reward = reward_multiplier * usfl_func.reward_calculator(time_taken) * ((task.get("importance",100)/10))
         return reward
 
     def update_reward(self, task):
@@ -606,9 +550,6 @@ class GraphEnv(gym.Env):
                     # If no specific sensor_id is provided, use the one from the condition
                     if not sensor_id and "condition" in task:
                         sensor_id = str(task["condition"].get("sensor_id", ""))
-                    
-                    # Debug output
-                    print(f"Processing confirmation task {task['task_id']} for sensor {sensor_id} on controller {target}")
                     
                     if sensor_id not in target_vertex["sensors_info"]:
                         print(f"❌ Confirmation task {task['task_id']} failed - No sensor info for sensor {sensor_id} in controller {target}")
@@ -720,9 +661,6 @@ class GraphEnv(gym.Env):
                     # Update the light's parameters
                     for param, value in params.items():
                         light_vertex[param] = value
-                    # Verify the update worked
-                    print(f"🔍 DEBUG: After update - Light {task['target']} state: isOn={light_vertex.get('isOn', 'N/A')}, brightness={light_vertex.get('brightness', 'N/A')}")
-                    
                 reward = self.update_reward(task)
                 print(f"💡 Light control task {task['task_id']} completed - Set brightness to {params.get('brightness', 'N/A')} on light {target} - Reward: {reward:.3f}")
                 return True
@@ -738,13 +676,13 @@ class GraphEnv(gym.Env):
         # Check and update SRAM for controllers
         if "usedSRAM" in target_vertex and "maxSRAM" in target_vertex:
             if target_vertex["usedSRAM"] + task.get("sram_usage", 0) > target_vertex["maxSRAM"]:
-                raise ValueError(f"❌ Task {task['task_id']} failed - Not enough SRAM at node {target}")
+                print(f"❌ Task {task['task_id']} failed - Not enough SRAM at node {target}. Environment stopping.")
                 return False
             target_vertex["usedSRAM"] += task.get("sram_usage", 0)
             
         target_vertex["tasks"].append(task)
-        if(task["task_name"] != "info_task"):
-            print(f"📦 Task {task['task_id']} delivered to intermediate node {target}")
+        #if(task["task_name"] != "info_task"):
+        #    print(f"📦 Task {task['task_id']} delivered to intermediate node {target}")
         task["task_location"] = target  # Update task location
         return True
 
@@ -777,7 +715,8 @@ class GraphEnv(gym.Env):
             
             # First check if the current controller has the needed info
             if "sensors_info" in current_controller and sensor_id_str in current_controller["sensors_info"]:
-                # Process confirmation locally
+                self.local_confirmation_counter+=1
+                self.reward += usfl_func.reward_calculator(0) * 2 * 0.25 
                 self._process_local_confirmation(task, current_controller, sensor_id_str, confirmation)
                 continue
                 
@@ -807,7 +746,6 @@ class GraphEnv(gym.Env):
             if "tasks" not in current_controller:
                 current_controller["tasks"] = []
             current_controller["tasks"].append(conf_task)
-            print(f"📋 Created confirmation task {conf_task['task_id']} to check sensor {sensor_id} info at controller {closest_controller['id']}")
     
     def _process_local_confirmation(self, task, controller, sensor_id, confirmation):
         """Process a confirmation locally when the controller already has the sensor info."""
@@ -841,56 +779,42 @@ class GraphEnv(gym.Env):
             
             if not condition_met:
                 awaiting_task["all_confirmed"] = False
-                
-            print(f"🔍 Local confirmation for task {task['task_id']} checked {comparing_parameter} value {value} against condition {condition} - Result: {condition_met}")
-            
             # If all confirmations are received, process the task
             if awaiting_task["confirmations_received"] >= awaiting_task["confirmations_needed"]:
                 self._finalize_task_with_confirmation(awaiting_task)
                 
     def _find_controller_with_sensor_info(self, current_controller_id, sensor_id):
         """Find the closest controller that has information about the specified sensor."""
-        # Use optimized iteration over self._vertices_dict.values()
         controllers = [v for v in self._vertices_dict.values() if v["label"] == "controller"]
         
-        # Debug output
-        print(f"Looking for controller with info for sensor {sensor_id}")
-        print(f"Current controller ID: {current_controller_id}")
         
-        # Check each controller for the sensor info
         controllers_with_info = []
         for controller in controllers:
-            controller_id = str(controller["id"])
-            
-            # Debug output for each controller's sensor info
+            controller_id_str = str(controller["id"])
             sensor_keys = list(controller.get("sensors_info", {}).keys())
-            print(f"Controller {controller_id} has sensors: {sensor_keys}")
             
-            # Skip current controller as we already checked it in the calling method
-            if controller_id == str(current_controller_id):
-                print(f"Skipping current controller {controller_id}")
+            if controller_id_str == str(current_controller_id):
+                print(f"Skipping current controller {controller_id_str}")
                 continue
                 
             if "sensors_info" in controller and str(sensor_id) in controller["sensors_info"]:
-                print(f"Found sensor {sensor_id} info in controller {controller_id}")
-                # Calculate distance from current controller to this one
+                print(f"Found sensor {sensor_id} info in controller {controller_id_str}")
                 try:
-                    # Using find_fastest_path instead of find_path
-                    path = usfl_func.find_fastest_path(self.graph, str(current_controller_id), controller_id)
+                    # Use the optimized function, passing `self`
+                    path = usfl_func.find_fastest_path_optimized(self, str(current_controller_id), controller_id_str)
                     if path:
                         distance = len(path) - 1
                         controllers_with_info.append((controller, distance))
-                        print(f"Path found to controller {controller_id} with distance {distance}")
+                        print(f"Path found to controller {controller_id_str} with distance {distance}")
                     else:
-                        print(f"No path found to controller {controller_id}")
+                        print(f"No path found to controller {controller_id_str}")
                 except Exception as e:
-                    print(f"Error finding path to controller {controller_id}: {e}")
+                    print(f"Error finding path to controller {controller_id_str}: {e}")
                     continue
         
-        # Return the closest controller with the info
         if controllers_with_info:
             closest_controller, distance = min(controllers_with_info, key=lambda x: x[1])
-            print(f"Selected closest controller: {closest_controller['id']} with distance {distance}")
+           
             return closest_controller
         
         print(f"WARNING: No controller found with information for sensor {sensor_id}")
@@ -903,13 +827,13 @@ class GraphEnv(gym.Env):
             original_task = awaiting_task["task"]
             
             # Check if all confirmations were local
-            if not awaiting_task.get("remote_check_initiated", False):
-                 original_task["locally_confirmed"] = True
-                 print(f"  Task {original_task['task_id']} confirmed locally.")
-                 # Add +2 reward for local confirmation
-                 self.reward += usfl_func.reward_calculator(0) * 2 * 0.8
-                 print(f"  Awarded +2 bonus for local confirmation of task {original_task['task_id']}. Current total reward: {self.reward}")
-
+            #if not awaiting_task.get("remote_check_initiated", False):
+            #     original_task["locally_confirmed"] = True
+            #     print(f"  Task {original_task['task_id']} confirmed locally.")
+            #     # Add +2 reward for local confirmation
+            #     self.reward += usfl_func.reward_calculator(0) * 2 * 0.8
+            #     print(f"  Awarded +2 bonus for local confirmation of task {original_task['task_id']}. Current total reward: {self.reward}")
+#
             # Get the controller that should execute the task - this is where the task should be located,
             # not on the target vertex directly
             controller_vertex = self.find_edge_vertex(str(original_task["task_location"]))
@@ -946,8 +870,6 @@ class GraphEnv(gym.Env):
                 original_task = awaiting_task["task"] # Get the original task
 
                 if awaiting_task["all_confirmed"]:
-                    print(f"🔄 DEBUG: Confirmed task {original_task['task_id']} - target: {original_task['target']}, params: {original_task.get('parameters_to_change', 'N/A')}")
-
                     # Find the controller where the answer arrived (which is the target of the answer task)
                     controller_vertex = self.find_edge_vertex(str(answer_task["target"]))
 
@@ -958,7 +880,6 @@ class GraphEnv(gym.Env):
                         # Ensure the task's location is updated to the controller
                         original_task["task_location"] = controller_vertex["id"]
                         controller_vertex["tasks"].append(original_task)
-                        print(f"✅ DEBUG: Added confirmed task {original_task['task_id']} to controller {controller_vertex['id']} tasks queue for delivery to {original_task['target']}")
                     else:
                         # This shouldn't happen if the graph is consistent
                         print(f"❌ DEBUG: Could not find controller vertex {answer_task['target']} to queue confirmed task {original_task['task_id']}")
@@ -975,7 +896,7 @@ class GraphEnv(gym.Env):
                 confirmation_task_id_to_remove = answer_task.get("answered_request_id")
                 if confirmation_task_id_to_remove and confirmation_task_id_to_remove in self.confirmation_tasks:
                      del self.confirmation_tasks[confirmation_task_id_to_remove]
-                     print(f"🗑️ Removed confirmation task {confirmation_task_id_to_remove} from tracking dictionary.") # Added log
+                     
                 elif confirmation_task_id_to_remove:
                     print(f"⚠️ Tried to remove confirmation task {confirmation_task_id_to_remove}, but it wasn't found in the dictionary.") # Added warning
                 else:
@@ -1107,7 +1028,7 @@ class GraphEnv(gym.Env):
 
         for room_name in room_ids:
             if room_name not in usfl_arr.rooms:
-                print(f"Warning: Room '{room_name}' not found in usefull_arrays. Skipping.")
+                raise Exception(f"Warning: Room '{room_name}' not found in usefull_arrays. Skipping.")
                 continue
 
             room_data = usfl_arr.rooms[room_name]
@@ -1190,26 +1111,37 @@ class GraphEnv(gym.Env):
 
 
     def scenarios_for_rooms(self,room_ids,starting_controller):
-        for room_id in room_ids:
-            room_id = int(room_id)
-        rooms = usfl_arr.rooms
-        # Print sample room information
-        for room_name, room_data in rooms.items():
-            if(not room_name.__contains__("room")):
+        processed_room_ids = []
+        if isinstance(room_ids, (list, tuple)):
+            for rid in room_ids:
+                try:
+                    processed_room_ids.append(int(rid))
+                except ValueError:
+                    print(f"Warning: Could not convert room_id '{rid}' to int. Skipping.")
+        elif isinstance(room_ids, (str, int)): # Handle single room_id case
+            try:
+                processed_room_ids.append(int(room_ids))
+            except ValueError:
+                print(f"Warning: Could not convert room_id '{room_ids}' to int. Skipping.")
+        else:
+            print(f"Warning: room_ids type {type(room_ids)} not supported. Skipping.")
+            return
+
+        rooms_data_source = usfl_arr.rooms # Assuming usfl_arr.rooms is the correct dict
+
+        for room_name, room_data in rooms_data_source.items():
+            if not room_name.startswith("room"):
                 continue
-            if int(room_name.replace("room", "")) in room_ids:
-                print(f"\nRoom: {room_name}")
-            for sensor_type, value in room_data.items():
-                print(f"{sensor_type}: {value}")
-            break  # Just print the first room for now
+            try:
+                room_number = int(room_name.replace("room", ""))
+                if room_number in processed_room_ids:
+                    print(f"\\nRoom: {room_name}")
+                    for sensor_type, value in room_data.items():
+                        print(f"  {sensor_type}: {value}")
+            except ValueError:
+                print(f"Warning: Could not parse room number from '{room_name}'. Skipping room.")
+            # Removed 'break' statement that was here to process all relevant rooms
             
     def add_new_regular_task(self,sensor_id,target):
         label = self.find_edge_vertex(str(sensor_id))["label"]
         usfl_arr.add_new_regular_task(target, sensor_id, label)
-        
-    
-
-if __name__ == "__main__": 
-    print("\n=== Testing Cross-Controller Confirmation with sensor 41 ===\n")
-    env = GraphEnv(usfl_arr.descriptions_for_regular_tasks)
-
