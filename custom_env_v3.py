@@ -20,7 +20,7 @@ class GraphEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
     
 
-    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10,scenario = "light"):
+    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10, scenario="light"):
         super().__init__() # Ensure superclass is initialized
         self.json_path = json_path
         with open(self.json_path, 'r') as f:
@@ -214,6 +214,8 @@ class GraphEnv(gym.Env):
         #    self.lights_scenario("4", importance=5)
         if self.scenario == "complex_light":
             self.complex_light_scenario(["room8", "room10","room11","room3","room4","room5","room6","room7","room13","room14","room15","room16","room17","room18"], 4)
+        elif self.scenario == "multi_sensor_scenario":
+            self.multi_sensor_scenario("4")
         while step_count < max_steps:
             # Check if there are any non-info tasks remaining
             non_info_tasks_remain = self.check_non_info_tasks()
@@ -325,7 +327,7 @@ class GraphEnv(gym.Env):
                     if "usedSRAM" in vertex:
                         vertex["usedSRAM"] = max(0, vertex["usedSRAM"] - task_to_remove.get("sram_usage", 0))
 
-    def create_info_task(self, location, target_controller, importance=7, task_size=20, sram_usage=4000):
+    def create_info_task(self, location, target_controller, importance=7, task_size=50, sram_usage=2000):
 # Get sensor type
         source_vertex = self.find_edge_vertex(str(location))
         if not source_vertex:
@@ -403,7 +405,7 @@ class GraphEnv(gym.Env):
             "sensor_id": str(actual_sensor_id_to_check),  # The actual sensor ID to check
             "importance": importance,
             "start_time": self.time,
-            "task_size": 50,  # Small size for confirmation tasks
+            "task_size": 100,  # Small size for confirmation tasks
             "sram_usage": 1000,
             "requester_task_id": requester_task["task_id"],
             "condition": condition
@@ -423,9 +425,9 @@ class GraphEnv(gym.Env):
             "target": target,
             "importance": confirmation_task["importance"],
             "start_time": self.time,
-            "task_size": 50,
+            "task_size": 100,
             "sram_usage": 1000,
-            "requester_task_id": confirmation_task["requester_task_id"], # ID of original task (e.g., control_light)
+            "requester_task_id": confirmation_task["requester_task_id"], # ID of original task (e.g., control_sensor)
             "answered_request_id": confirmation_task["task_id"], # ID of the confirmation_task itself
             "confirmation_result": is_confirmed
         }
@@ -513,7 +515,7 @@ class GraphEnv(gym.Env):
         """
         # Base reward for different task types
         rewards_multiplier = {
-            "control_light": 1,
+            "control_sensor": 1,
             "confirmation_task": 0.25,
             "confirmation_answer": 0.25
         }
@@ -647,7 +649,7 @@ class GraphEnv(gym.Env):
                 return True
 
             # For light control tasks
-            elif task.get("task_name") == "control_light":
+            elif task.get("task_name") == "control_sensor":
                 # ... existing code ...
                 if "parameters_to_change" in task:
                     params = task["parameters_to_change"]
@@ -668,6 +670,7 @@ class GraphEnv(gym.Env):
             # For regular tasks that reached their target
             else:
                 print(f"❌❌❌ERRORRRR: Task {task['task_id']} completed at target {target} (BUT NOTHING HAPPENED)")
+                print(f"Task details: {task}")
                 return True
         # For intermediate nodes (including controllers)
         if "tasks" not in target_vertex:
@@ -880,6 +883,15 @@ class GraphEnv(gym.Env):
                         # Ensure the task's location is updated to the controller
                         original_task["task_location"] = controller_vertex["id"]
                         controller_vertex["tasks"].append(original_task)
+                        
+                        # Check if this is a task with the trigger_all_lights flag
+                        if original_task.get("trigger_all_lights") == True:
+                            print(f"✨ Task {original_task['task_id']} was confirmed and has trigger_all_lights flag. Triggering lights scenario.")
+                            # Trigger the lights scenario with all lights
+                            controller_id = str(controller_vertex["id"])
+                            self.lights_scenario(controller_id, importance=7,starting_time=original_task["start_time"])
+                            self.turn_off_ventilation_scenario(controller_id, importance=4,starting_time=original_task["start_time"])
+                            self.lock_doors_scenario(controller_id, importance=9,starting_time=original_task["start_time"])
                     else:
                         # This shouldn't happen if the graph is consistent
                         print(f"❌ DEBUG: Could not find controller vertex {answer_task['target']} to queue confirmed task {original_task['task_id']}")
@@ -991,13 +1003,6 @@ class GraphEnv(gym.Env):
         
         self.time = self.time + self.time_step_in_ms
         return True
-
-    def render(self, mode="human"):
-        """
-        Render the environment (not implemented).
-        """
-        pass
-    
     def close(self):
         """
         Close the environment.
@@ -1027,7 +1032,7 @@ class GraphEnv(gym.Env):
             controller_vertex["tasks"] = []
 
         for room_name in room_ids:
-            if room_name not in usfl_arr.rooms:
+            if (room_name not in usfl_arr.rooms):
                 raise Exception(f"Warning: Room '{room_name}' not found in usefull_arrays. Skipping.")
                 continue
 
@@ -1075,10 +1080,10 @@ class GraphEnv(gym.Env):
             # --- Create Light Control Tasks with Confirmation ---
             for light_id in light_ids:
                 light_id_str = str(light_id)
-                # Create the main task (control_light)
+                # Create the main task (control_sensor)
                 light_task = {
                     "task_id": self.task_id,
-                    "task_name": "control_light",
+                    "task_name": "control_sensor",
                     "task_location": starting_controller_id, # Task originates from the controller
                     "target": light_id_str,
                     "importance": 5, # Example importance
@@ -1145,3 +1150,299 @@ class GraphEnv(gym.Env):
     def add_new_regular_task(self,sensor_id,target):
         label = self.find_edge_vertex(str(sensor_id))["label"]
         usfl_arr.add_new_regular_task(target, sensor_id, label)
+
+    def lights_scenario(self, starting_vertex,starting_time = -1, targets = [], importance=7):
+        if(starting_time == -1):
+            starting_time = self.time
+        """Create tasks for controlling lights from a starting vertex.
+        
+        Args:
+            starting_vertex: ID of the vertex initiating the tasks
+            targets: List of target light IDs to control
+            importance: Priority level of the tasks
+                        
+        Returns:
+            Tuple[List[Dict], bool]: List of created tasks and success flag
+        """
+        if not targets:
+            # Take first 40 light IDs from usfl_arr.light
+            if len(usfl_arr.light) > 40:
+                targets = usfl_arr.light[:40]
+            else:
+                targets = usfl_arr.light
+        starting_vertex = str(starting_vertex)
+        
+        task_size = 100  # 100 bits
+        SRAMusage = 40  # 40 b 
+        
+        # Find source vertex and verify SRAM capacity
+        source_vertex = self.find_edge_vertex(starting_vertex)
+        if not source_vertex:
+            raise ValueError(f"Source vertex {starting_vertex} not found in graph vertices")
+            
+        if "usedSRAM" in source_vertex and "maxSRAM" in source_vertex:
+            if source_vertex["usedSRAM"] + SRAMusage * len(targets) > source_vertex["maxSRAM"]:
+                raise ValueError(f'Not enough SRAM in source vertex {starting_vertex} to create tasks: {source_vertex["usedSRAM"]}')
+
+        tasks = []
+        for target in targets:
+            task = {
+                "task_id": self.task_id,
+                "task_name": "control_sensor",
+                "task_location": starting_vertex,
+                "target": target,
+                "importance": importance,
+                "start_time": starting_time,
+                "task_size": task_size,
+                "sram_usage": SRAMusage,
+                "parameters_to_change": {
+                    "brightness": 7,
+                    "isOn": 1,
+                    "duration": 10,
+                }
+            }
+            self.task_id += 1
+            tasks.append(task)
+
+                    # Add tasks to the source vertex
+        if "tasks" not in source_vertex:
+            source_vertex["tasks"] = []
+        source_vertex["tasks"].extend(tasks)
+        source_vertex["usedSRAM"] = source_vertex.get("usedSRAM", 0) + SRAMusage * len(tasks)
+
+        return tasks, True  # Return both tasks and success flag
+
+    def multi_sensor_scenario(self, starting_controller_id):
+        """
+        Creates a scenario where one light task is sent with confirmations from ALL sensors
+        of each type (CO2, movement, LiDAR, noise), and when that task is confirmed, 
+        it triggers turning on all lights.
+        
+        Args:
+            starting_controller_id: ID of the controller initiating the scenario
+        """
+        starting_controller_id = str(starting_controller_id)
+        controller_vertex = self.find_edge_vertex(starting_controller_id)
+        
+        if not controller_vertex or controller_vertex.get("label") != "controller":
+            print(f"Error: Starting ID {starting_controller_id} is not a valid controller.")
+            return
+        # We'll select one light to control initially
+        light_id = usfl_arr.light[0] if usfl_arr.light else None
+        if not light_id:
+            print("No lights available for scenario")
+            raise ValueError("No lights available for scenario")
+            
+        # Create confirmations from different sensor types with always-true conditions
+        confirmations = []
+        
+        # Add ALL CO2 sensors confirmations (always true condition)
+        if usfl_arr.CO2:
+            for co2_sensor_id in usfl_arr.CO2:
+                confirmations.append({
+                    "sensor_id": str(co2_sensor_id),
+                    "condition": {
+                        "type": "greater_than",
+                        "value": -1,  # Always true
+                        "comparing parameter": "co2"
+                    },
+                    "importance": 8
+                })
+            print(f"Added confirmations from {len(usfl_arr.CO2)} CO2 sensors")
+            
+        # Add ALL movement sensors confirmations (always true condition)
+        if usfl_arr.movement:
+            for movement_sensor_id in usfl_arr.movement:
+                confirmations.append({
+                    "sensor_id": str(movement_sensor_id),
+                    "condition": {
+                        "type": "greater_than", 
+                        "value": -1,  # Always true
+                        "comparing parameter": "movement"
+                    },
+                    "importance": 8
+                })
+            print(f"Added confirmations from {len(usfl_arr.movement)} movement sensors")
+            
+        # Add ALL LiDAR sensors confirmations (always true condition)
+        if usfl_arr.LiDAR:
+            for lidar_sensor_id in usfl_arr.LiDAR:
+                confirmations.append({
+                    "sensor_id": str(lidar_sensor_id),
+                    "condition": {
+                        "type": "greater_than",
+                        "value": -1,  # Always true
+                        "comparing parameter": "distance"
+                    },
+                    "importance": 8
+                })
+            print(f"Added confirmations from {len(usfl_arr.LiDAR)} LiDAR sensors")
+            
+        # Add ALL noise sensors confirmations (always true condition)
+        if usfl_arr.noise:
+            for noise_sensor_id in usfl_arr.noise:
+                confirmations.append({
+                    "sensor_id": str(noise_sensor_id),
+                    "condition": {
+                        "type": "greater_than",
+                        "value": -1,  # Always true
+                        "comparing parameter": "decibel"
+                    },
+                    "importance": 8
+                })
+            print(f"Added confirmations from {len(usfl_arr.noise)} noise sensors")
+            
+        print(f"Total confirmations required: {len(confirmations)} from all sensors")
+            
+        # Create initial light control task that requires confirmations
+        light_task = {
+            "task_id": self.task_id,
+            "task_name": "control_sensor",
+            "task_location": starting_controller_id,
+            "target": str(light_id),
+            "importance": 5,
+            "start_time": self.time,
+            "task_size": 100,
+            "sram_usage": 4000,
+            "parameters_to_change": {
+                "brightness": 5,  # Medium brightness
+                "isOn": 1,        # Turn the light on
+            },
+            "trigger_all_lights": True  # Custom flag to trigger all lights scenario
+        }
+        self.task_id += 1
+        
+        # Bundle task with confirmations
+        task_with_confirmation = self.create_task_with_confirmation_needed(
+            task=light_task,
+            confirmations=confirmations
+        )
+        
+        # Handle the task (initiate confirmation process)
+        try:
+            self.handle_task_with_confirmation(task_with_confirmation)
+            print(f"Initiated light control task {light_task['task_id']} for light {light_id} with confirmations from ALL sensors.")
+            print(f"When this task is confirmed, all lights will turn on.")
+        except Exception as e:
+            print(f"Error initiating multi_sensor_scenario: {e}")
+            # Decrement task_id if creation failed before handling
+            self.task_id -= 1
+
+    def lock_doors_scenario(self, starting_vertex,starting_time = -1, targets = [], importance=9):
+        if(starting_time == -1):
+            starting_time = self.time
+        """Create tasks for locking doors from a starting vertex.
+        
+        Args:
+            starting_vertex: ID of the vertex initiating the tasks
+            targets: List of target door IDs to lock (if empty, all doors will be locked)
+            importance: Priority level of the tasks
+                        
+        Returns:
+            Tuple[List[Dict], bool]: List of created tasks and success flag
+        """
+        if not targets:
+            # Take all door IDs from usfl_arr.door
+            targets = usfl_arr.door
+        starting_vertex = str(starting_vertex)
+        
+        task_size = 100  # 100 bits
+        SRAMusage = 30  # 30 bytes 
+        
+        # Find source vertex and verify SRAM capacity
+        source_vertex = self.find_edge_vertex(starting_vertex)
+        if not source_vertex:
+            raise ValueError(f"Source vertex {starting_vertex} not found in graph vertices")
+            
+        if "usedSRAM" in source_vertex and "maxSRAM" in source_vertex:
+            if source_vertex["usedSRAM"] + SRAMusage * len(targets) > source_vertex["maxSRAM"]:
+                raise ValueError(f'Not enough SRAM in source vertex {starting_vertex} to create tasks: {source_vertex["usedSRAM"]}')
+
+        tasks = []
+        for target in targets:
+            task = {
+                "task_id": self.task_id,
+                "task_name": "control_sensor",
+                "task_location": starting_vertex,
+                "target": target,
+                "importance": importance,
+                "start_time": starting_time,
+                "task_size": task_size,
+                "sram_usage": SRAMusage,
+                "parameters_to_change": {
+                    "locked": 1,  # 1 means locked
+                    "secure_mode": 1,  # Enable secure mode
+                }
+            }
+            self.task_id += 1
+            tasks.append(task)
+            print(f"Created lock task for door {target}")
+
+        # Add tasks to the source vertex
+        if "tasks" not in source_vertex:
+            source_vertex["tasks"] = []
+        source_vertex["tasks"].extend(tasks)
+        source_vertex["usedSRAM"] = source_vertex.get("usedSRAM", 0) + SRAMusage * len(tasks)
+        
+        print(f"✅ Created {len(tasks)} door locking tasks from controller {starting_vertex}")
+        return tasks, True  # Return both tasks and success flag
+
+    def turn_off_ventilation_scenario(self, starting_vertex,starting_time = -1, targets = [], importance=7):
+        if(starting_time == -1):
+            starting_time = self.time
+        """Create tasks for turning off ventilation systems from a starting vertex.
+        
+        Args:
+            starting_vertex: ID of the vertex initiating the tasks
+            targets: List of target ventilation IDs to turn off (if empty, all ventilations will be turned off)
+            importance: Priority level of the tasks
+                        
+        Returns:
+            Tuple[List[Dict], bool]: List of created tasks and success flag
+        """
+        if not targets:
+            # Take all ventilation IDs from usfl_arr.ventelation
+            targets = usfl_arr.ventelation
+        starting_vertex = str(starting_vertex)
+        
+        task_size = 100  # 100 bits
+        SRAMusage = 25  # 25 bytes 
+        
+        # Find source vertex and verify SRAM capacity
+        source_vertex = self.find_edge_vertex(starting_vertex)
+        if not source_vertex:
+            raise ValueError(f"Source vertex {starting_vertex} not found in graph vertices")
+            
+        if "usedSRAM" in source_vertex and "maxSRAM" in source_vertex:
+            if source_vertex["usedSRAM"] + SRAMusage * len(targets) > source_vertex["maxSRAM"]:
+                raise ValueError(f'Not enough SRAM in source vertex {starting_vertex} to create tasks: {source_vertex["usedSRAM"]}')
+
+        tasks = []
+        for target in targets:
+            task = {
+                "task_id": self.task_id,
+                "task_name": "control_sensor",
+                "task_location": starting_vertex,
+                "target": target,
+                "importance": importance,
+                "start_time": starting_time,
+                "task_size": task_size,
+                "sram_usage": SRAMusage,
+                "parameters_to_change": {
+                    "isOn": 0,         # Turn ventilation off
+                    "fan_speed": 0,     # Set fan speed to 0
+                    "maintenance_mode": 1  # Enable maintenance mode
+                }
+            }
+            self.task_id += 1
+            tasks.append(task)
+            print(f"Created task to turn off ventilation {target}")
+
+        # Add tasks to the source vertex
+        if "tasks" not in source_vertex:
+            source_vertex["tasks"] = []
+        source_vertex["tasks"].extend(tasks)
+        source_vertex["usedSRAM"] = source_vertex.get("usedSRAM", 0) + SRAMusage * len(tasks)
+        
+        print(f"✅ Created {len(tasks)} ventilation shutdown tasks from controller {starting_vertex}")
+        return tasks, True  # Return both tasks and success flag

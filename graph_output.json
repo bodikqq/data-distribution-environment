@@ -4,7 +4,7 @@
       "id": "3",
       "label": "controller",
       "name": "Outside controller",
-      "maxSRAM": 512000,
+      "maxSRAM": 5120000,
       "usedSRAM": 0,
       "tasks": []
     },
@@ -12,7 +12,7 @@
       "id": "4",
       "label": "controller",
       "name": "1st floorfirst half",
-      "maxSRAM": 512000,
+      "maxSRAM": 5120000,
       "usedSRAM": 0,
       "tasks": []
     },
@@ -20,7 +20,7 @@
       "id": "7",
       "label": "controller",
       "name": "second floor",
-      "maxSRAM": 512000,
+      "maxSRAM": 5120000,
       "usedSRAM": 0,
       "tasks": []
     },
@@ -28,7 +28,7 @@
       "id": "10",
       "label": "controller",
       "name": "1st floorsecond half",
-      "maxSRAM": 512000,
+      "maxSRAM": 5120000,
       "usedSRAM": 0,
       "tasks": []
     },

@@ -169,7 +169,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "temperature",
         "frequency": 500,
-        "importance": 7,
+        "importance": 4,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -178,7 +178,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "noise",
         "frequency": 2000,
-        "importance": 8,
+        "importance": 4,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -187,7 +187,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "movement",
         "frequency": 2000,
-        "importance": 9,
+        "importance": 6,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -196,7 +196,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "light",
         "frequency": 2000,
-        "importance": 5,
+        "importance": 2,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -205,7 +205,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "LiDAR",
         "frequency": 1000,
-        "importance": 7,
+        "importance": 6,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -214,7 +214,7 @@ descriptions_for_regular_tasks = [
     {
         "label": "CO2",
         "frequency": 500,
-        "importance": 9,
+        "importance": 7,
         "task_size": 50,
         "sram_usage": 3000,
         "specific_ids": [],
@@ -241,17 +241,34 @@ def add_new_regular_task(target, specific_id,label):
             if specific_id not in task["specific_ids"]:
                 task["specific_ids"].append(specific_id)
             return
-    
+
     # If no matching task found, create new one
-    new_task = {
-        "label": label,
-        "frequency": 1000,
-        "importance": 5,
-        "task_size": 50,
-        "sram_usage": 3000,
-        "specific_ids": [specific_id],
-        "target": target
-    }
+    # Find the default task properties based on the label
+    default_task_props = next((item for item in _initial_descriptions_for_regular_tasks if item["label"] == label), None)
+
+    if default_task_props is None:
+        # Fallback or error handling if label not found, though prompt says assume it exists
+        # For now, let's use some default values or raise an error
+        # Using the provided example's fallback for now:
+        new_task = {
+            "label": label,
+            "frequency": 1000,  # Default if label not found
+            "importance": 5,    # Default if label not found
+            "task_size": 50,    # Default if label not found
+            "sram_usage": 3000, # Default if label not found
+            "specific_ids": [specific_id],
+            "target": target
+        }
+    else:
+        new_task = {
+            "label": label,
+            "frequency": default_task_props["frequency"],
+            "importance": default_task_props["importance"],
+            "task_size": default_task_props["task_size"],
+            "sram_usage": default_task_props["sram_usage"],
+            "specific_ids": [specific_id],
+            "target": target
+        }
     descriptions_for_regular_tasks.append(new_task)
 
 def reset_regular_tasks():
@@ -259,3 +276,4 @@ def reset_regular_tasks():
     global descriptions_for_regular_tasks
     descriptions_for_regular_tasks = copy.deepcopy(_initial_descriptions_for_regular_tasks)
 
+print (len(CO2) + len(LiDAR) + len(movement) + len(noise))
