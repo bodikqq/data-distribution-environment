@@ -9,3 +9,5 @@
 /plot_results.py
 /test3.py
 /security_scenario_results
+/ppo_results
+/action_range_results
