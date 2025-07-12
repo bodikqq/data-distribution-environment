@@ -20,7 +20,7 @@ class GraphEnv(gym.Env):
     metadata = {"render.modes": ["human"]}
     
 
-    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10, scenario="light"):
+    def __init__(self, descriptions_for_regular_tasks, json_path="graph_output.json", time_step=10, scenario="multi_sensor_scenario"):
         super().__init__() # Ensure superclass is initialized
         self.json_path = json_path
         
@@ -50,7 +50,8 @@ class GraphEnv(gym.Env):
         self.confirmation_tasks = {}
         self.local_confirmation_counter = 0
         self.non_local_confirmation_counter = 0
-        
+        self.unique_actions = 0
+
         self.observation = {
             "graph": self.graph,
         }
@@ -228,7 +229,8 @@ class GraphEnv(gym.Env):
                 continue
             seen.add(pair)
             unique_pairs.append(pair)
-        print(f"UNIQUE ACTIONS: {len(unique_pairs)}" )  
+        self.unique_actions = len(unique_pairs)
+        #print(f"UNIQUE ACTIONS: {len(unique_pairs)}" )  
         for sensor_id, controller_id in unique_pairs:
             try:
                 self.add_new_regular_task(sensor_id, controller_id)
@@ -279,6 +281,7 @@ class GraphEnv(gym.Env):
         }
         ##print(F"TOTAL LOCAL CONFIRMATIONS: {self.local_confirmation_counter}")
         ##print(F"TOTAL NON-LOCAL CONFIRMATIONS: {self.non_local_confirmation_counter}")
+        #print(f"TOTAL REWARD: {self.reward}")
         return self.constant_obs, self.reward, terminated, truncated, info
 
     def check_non_info_tasks(self):

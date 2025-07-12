@@ -250,7 +250,7 @@ def make_env(rank, seed=0):
 
 if __name__ == "__main__":
     # Environment setup
-    num_cpu = max(1, min(4, os.cpu_count() - 1))  # Use multiple CPUs if available, leave one for system
+    num_cpu = 8 # Use multiple CPUs if available, leave one for system
     print(f"Creating {num_cpu} parallel environments")
     
     if num_cpu > 1:
@@ -267,17 +267,6 @@ if __name__ == "__main__":
     model = PPO(
     policy="MlpPolicy",
     env=env,
-    n_steps=128,                    
-    batch_size=min(256, 128*num_cpu),
-    learning_rate=5e-4,
-    gamma=1.0,
-    ent_coef=0.008,  
-    clip_range=0.2,
-    vf_coef=0.5,
-    max_grad_norm=0.5,
-    n_epochs=4,              # fewer passes per update
-    verbose=1,
-    tensorboard_log=logs_dir,
     device=device
 )
 
@@ -286,7 +275,7 @@ if __name__ == "__main__":
     callback = EnhancedTrainingCallback()
     
     # Training parameters - much longer than original for proper learning
-    total_timesteps = 100000 
+    total_timesteps = 200000 
     
     print(f"Starting training for {total_timesteps} steps...")
     start_time = time.time()

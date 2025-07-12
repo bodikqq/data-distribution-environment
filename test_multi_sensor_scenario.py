@@ -54,7 +54,7 @@ def test_multi_sensor_scenario(num_steps=1, actions_per_step=5, use_random_actio
             print("Using empty action list for this run")
         
         # Run the environment step
-        observation, reward, done, info = environment.step(action_matrix)
+        observation, reward, done, truncated, info = environment.step(action_matrix)
         step_time = time.time() - step_start_time  # Calculate step execution time
         total_reward += reward
         
@@ -71,43 +71,12 @@ def test_multi_sensor_scenario(num_steps=1, actions_per_step=5, use_random_actio
             "execution_time": step_time
         })
         
-        # Print status of 3 lights
+        # Print status of devices for display only
         print("\n--- Devices Status ---")
-        print("Light Status:")
-        # Select 3 light IDs from different rooms
-        light_ids = [usfl_arr.rooms['room3']['lights'][0], usfl_arr.rooms['room8']['lights'][0], usfl_arr.rooms['room13']['lights'][0]]
-        for light_id in light_ids:
-            light_vertex = find_vertex_by_id(observation['graph']['vertices'], light_id)
-            if light_vertex:
-                is_on = "ON" if light_vertex.get('isOn', 0) == 1 else "OFF"
-                brightness = light_vertex.get('brightness', 'N/A')
-                print(f"  Light {light_id}: {is_on}, Brightness: {brightness}")
-            else:
-                print(f"  Light {light_id}: Not found")
-        
-        # Print status of 3 ventilations
-        print("\nVentilation Status:")
-        ventilation_ids = [usfl_arr.rooms['room3']['ventelation'], usfl_arr.rooms['room8']['ventelation'], usfl_arr.rooms['room13']['ventelation']]
-        for ventilation_id in ventilation_ids:
-            ventilation_vertex = find_vertex_by_id(observation['graph']['vertices'], ventilation_id)
-            if ventilation_vertex:
-                is_on = "ON" if ventilation_vertex.get('isOn', 0) == 1 else "OFF"
-                fan_speed = ventilation_vertex.get('fan_speed', 'N/A')
-                print(f"  Ventilation {ventilation_id}: {is_on}, Fan Speed: {fan_speed}")
-            else:
-                print(f"  Ventilation {ventilation_id}: Not found")
-        
-        # Print status of 3 doors
-        print("\nDoor Status:")
-        door_ids = [usfl_arr.rooms['room3']['door'], usfl_arr.rooms['room8']['door'], usfl_arr.rooms['room13']['door']]
-        for door_id in door_ids:
-            door_vertex = find_vertex_by_id(observation['graph']['vertices'], door_id)
-            if door_vertex:
-                locked = "LOCKED" if door_vertex.get('locked', 0) == 1 else "UNLOCKED"
-                secure_mode = "ON" if door_vertex.get('secure_mode', 0) == 1 else "OFF"
-                print(f"  Door {door_id}: {locked}, Secure Mode: {secure_mode}")
-            else:
-                print(f"  Door {door_id}: Not found")
+        print("Note: Direct access to device status is not available with the constant observation format.")
+        print("Light Status: Not available in current observation format")
+        print("Ventilation Status: Not available in current observation format")
+        print("Door Status: Not available in current observation format")
     
     total_execution_time = time.time() - start_time  # Calculate total execution time
     
@@ -155,79 +124,133 @@ def save_results_to_file(all_steps_info, num_steps, actions_per_step, total_rewa
 
     # Generate timestamp for unique filename
     timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    filename = os.path.join(output_dir, f"multi_sensor_scenario_{timestamp}.txt")
+    #filename = os.path.join(output_dir, f"multi_sensor_scenario_{timestamp}.txt")
     
     # Write results to file
-    with open(filename, "w") as f:
-        f.write("="*70 + "\n")
-        f.write("MULTI-SENSOR SECURITY SCENARIO RESULTS\n")
-        f.write("="*70 + "\n")
-        f.write(f"Test Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"Number of runs: {num_steps}\n")
-        f.write(f"Actions per run: {actions_per_step}\n")
-        f.write(f"Total reward: {total_reward}\n")
-        f.write(f"Average reward per run: {total_reward/num_steps if num_steps > 0 else 0}\n")
-        f.write(f"Total execution time: {total_execution_time:.2f} seconds\n\n")
-        
-        f.write("Run Details:\n")
-        f.write("Run,Reward,Time,Tasks,Steps,ExecutionTime\n")
-        for run_info in all_steps_info:
-            f.write(f"{run_info['run']},{run_info['reward']},{run_info['time']},"
-                   f"{run_info['num_tasks']},{run_info['steps_taken']},{run_info['execution_time']:.2f}\n")
-    
-    print(f"\nResults saved to file: {filename}")
+    #with open(filename, "w") as f:
+    #    f.write("="*70 + "\n")
+    #    f.write("MULTI-SENSOR SECURITY SCENARIO RESULTS\n")
+    #    f.write("="*70 + "\n")
+    #    f.write(f"Test Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+    #    f.write(f"Number of runs: {num_steps}\n")
+    #    f.write(f"Actions per run: {actions_per_step}\n")
+    #    f.write(f"Total reward: {total_reward}\n")
+    #    f.write(f"Average reward per run: {total_reward/num_steps if num_steps > 0 else 0}\n")
+    #    f.write(f"Total execution time: {total_execution_time:.2f seconds\n\n")
+    #    
+    #    f.write("Run Details:\n")
+    #    f.write("Run,Reward,Time,Tasks,Steps,ExecutionTime\n")
+    #    for run_info in all_steps_info:
+    #        f.write(f"{run_info['run']},{run_info['reward']},{run_info['time']},"
+    #               f"{run_info['num_tasks']},{run_info['steps_taken']},{run_info['execution_time']:.2f}\n")
+    #
+    #print(f"\nResults saved to file: {filename}")
     
     # Create a simple plot of rewards
-    create_reward_plot(all_steps_info, output_dir, timestamp)
+    create_reward_plot(all_steps_info, output_dir, timestamp,actions_per_step)
 
-def create_reward_plot(all_steps_info, output_dir, timestamp):
-    """Create and save a plot of time vs rewards"""
+def create_reward_plot(all_steps_info, output_dir, timestamp, actions_per_step):
+    """Create and save plots of rewards vs episodes and time vs rewards"""
     try:
+        # Create two plots: Episodes vs Rewards and Time vs Rewards
         plt.figure(figsize=(10, 6))
         
         runs = [info["run"] for info in all_steps_info]
         rewards = [info["reward"] for info in all_steps_info]
-        times = [info["time"] for info in all_steps_info]
+        times = [info["time"] for info in all_steps_info]          # Plot 1: Episodes (runs) vs Rewards - similar to ppo_gpu style
+        # Skip the first few values for better visualization if there are many data points
+        skip_values = min(10, len(rewards) // 10) if len(rewards) > 30 else 0  # Dynamic skip based on data size
         
-        # Single plot: Environment Time (X) vs Reward (Y)
-        plt.scatter(times, rewards, marker='o', color='blue', s=50)
+        if len(rewards) <= skip_values:
+            plot_runs = runs
+            plot_rewards = rewards
+        else:
+            plot_runs = runs[skip_values:]
+            plot_rewards = rewards[skip_values:]              # Main reward plot with clean lines (no markers) and transparency
+        plt.plot(plot_runs, plot_rewards, 'b-', linewidth=1.5, alpha=0.47, label='Reward')
         
-        # Add run numbers as annotations
-        for i, run in enumerate(runs):
-            plt.annotate(f'Run {run}', (times[i], rewards[i]), 
-                        textcoords="offset points", 
-                        xytext=(0,10), 
-                        ha='center')
-            
+        # Add regression line
+        if len(plot_rewards) >= 2:
+            try:
+                z = np.polyfit(plot_runs, plot_rewards, 1)
+                p = np.poly1d(z)
+                x_range = np.linspace(min(plot_runs), max(plot_runs), 100)
+                plt.plot(x_range, p(x_range), "r--", linewidth=1.5, 
+                         label=f'Trend: y={z[0]:.4f}x+{z[1]:.2f}')
+            except Exception as e:
+                print(f"Could not draw regression line: {e}")
+        
+        # Add moving average
+        window_size = 30  # Adjust window size based on data length
+        if len(rewards) >= window_size:
+            try:
+                moving_avg = np.convolve(rewards, np.ones(window_size)/window_size, mode='valid')
+                # Align moving average with original data points
+                start_idx = window_size // 2
+                end_idx = start_idx + len(moving_avg)
+                plt.plot(runs[start_idx:end_idx], moving_avg, color='darkblue', linewidth=2, label=f'Moving Avg (n={window_size})')
+            except Exception as e:
+                print(f"Could not calculate moving average: {e}")
+                
+        # Show legend with all plot elements
+        plt.legend()
+        
+        plt.title('Episodes vs Reward')
+        plt.xlabel('Episode')
+        plt.ylabel('Reward')
+        plt.grid(True)
+        
+        plt.tight_layout()
+        
+        # Save episodes vs rewards plot
+        episodes_plot_filename = os.path.join(output_dir, f"episodes_vs_rewards_{actions_per_step}_actions.png")
+        plt.savefig(episodes_plot_filename)
+        plt.close()
+        
+        print(f"Episodes vs Reward plot saved to: {episodes_plot_filename}")
+        
+        # Plot 2: Environment Time vs Rewards (original plot)
+        plt.figure(figsize=(10, 6))
+        plt.scatter(times, rewards, marker='o', color='green', s=50)
+        
+        # Add annotations if there aren't too many points
+        if len(runs) <= 20:
+            for i, run in enumerate(runs):
+                plt.annotate(f'Run {run}', (times[i], rewards[i]), 
+                            textcoords="offset points", 
+                            xytext=(0,10), 
+                            ha='center')
+        
         plt.title('Multi-Sensor Security Scenario - Environment Time vs Reward')
         plt.xlabel('Environment Time')
         plt.ylabel('Reward')
         plt.grid(True)
         
         # Draw a best fit line if there are enough points
-        if len(rewards) > 1:
+        if len(rewards) >= 10:
             try:
                 z = np.polyfit(times, rewards, 1)
                 p = np.poly1d(z)
                 x_range = np.linspace(min(times), max(times), 100)
-                plt.plot(x_range, p(x_range), "r--", alpha=0.8, label=f"y={z[0]:.3f}x+{z[1]:.3f}")
+                plt.plot(x_range, p(x_range), "r--", alpha=0.8, label=f"Trend: y={z[0]:.3f}x+{z[1]:.3f}")
                 plt.legend()
             except Exception as e:
                 print(f"Could not draw trend line: {e}")
         
         plt.tight_layout()
         
-        plot_filename = os.path.join(output_dir, f"multi_sensor_plot_{timestamp}.png")
-        plt.savefig(plot_filename)
+        # Save time vs rewards plot (original)
+        time_plot_filename = os.path.join(output_dir, f"time_vs_rewards_{actions_per_step}_actions.png")
+        plt.savefig(time_plot_filename)
         plt.close()
         
-        print(f"Time vs Reward plot saved to: {plot_filename}")
+        print(f"Time vs Reward plot saved to: {time_plot_filename}")
     except Exception as e:
-        print(f"Error creating plot: {e}")
+        print(f"Error creating plots: {e}")
 
 if __name__ == "__main__":
     # Run the test with 3 steps, 20 actions per step, and random actions enabled
-    test_multi_sensor_scenario(num_steps=2, actions_per_step=700, use_random_actions=True, save_results=True)
+    test_multi_sensor_scenario(num_steps=10000, actions_per_step=300, use_random_actions=True, save_results=True)
     
     # Uncomment the line below to run without random actions
     # test_multi_sensor_scenario(num_steps=3, use_random_actions=False, save_results=True)

@@ -12,7 +12,7 @@
       "id": "2",
       "label": "controller",
       "name": "1st floorfirst half",
-      "maxSRAM": 5120000,
+      "maxSRAM": 512000, 
       "usedSRAM": 0,
       "tasks": []
     },
